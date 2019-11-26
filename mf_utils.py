@@ -1016,7 +1016,7 @@ def get_gyromagnetic_ratio(element='H'):
                          'unknown.' % element)
     return gamma
 
-def rotate_atom(sig, sch_mat, ordir, newdir, DIFF, S0):
+def rotate_atom(sig, sch_mat, ordir, newdir, DIFF, S0, warnings=True):
     """Rotate HARDI DW-MRI signals arising from single fascicles.
 
     Assumes signals split per shell can be written as a function of the dot
@@ -1036,6 +1036,7 @@ def rotate_atom(sig, sch_mat, ordir, newdir, DIFF, S0):
           weighted signal valules. Within a substrate and a HARDI shell, all
           values should be identical. Like DIFF, just used to add the
           free-diffusion data point to stablize the interpolation.
+      warnings: whether to print warning to stdout. Default: True.
 
     Returns:
       sig_rot: numpy array of the same shape as sig containing the rotated
@@ -1118,7 +1119,7 @@ def rotate_atom(sig, sch_mat, ordir, newdir, DIFF, S0):
                              (i+1, num_shells, GdD_un[i, 0], GdD_un[i, 1],
                               GdD_un[i, 2], bval/1e6))
         # Print warning if very few points detected in one shell
-        if ind_sh.size < 10:
+        if ind_sh.size < 10 and warnings:
             print("WARNING: rotate_atom: fewer than 10 data points detected"
                   " for acquisition parameters (G, Del, del) %d/%d "
                   "(%g, %g, %g), b=%g s/mm^2.\n"
@@ -1223,7 +1224,7 @@ def rotate_atom(sig, sch_mat, ordir, newdir, DIFF, S0):
                                  axis=0)
 
         # Check consistency of interpolation data
-        if dot_prod_data.size != sig_data.shape[0]:
+        if (dot_prod_data.size != sig_data.shape[0]) and warnings:
             print("WARNING: rotate_atom: problem with shapes and/or sizes"
                   " before 1D interpolation at shell %d/%d "
                   "(G=%g Del=%g del=%g)" %
