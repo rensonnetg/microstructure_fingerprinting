@@ -653,8 +653,8 @@ def solve_exhaustive_posweights(A, y, dicsizes, printmsg=None):
         (w_nneg, ind_atoms_subdic, ind_atoms_totdic, min_obj,
          y_recons) = solve_exhaustive_posweights_1(A, y)
         # force return arrays
-        return (np.array(w_nneg), np.array(ind_atoms_subdic),
-                np.array(ind_atoms_totdic), min_obj, y_recons)
+        return (np.array([w_nneg]), np.array([ind_atoms_subdic]),
+                np.array([ind_atoms_totdic]), min_obj, y_recons)
     elif Nvars == 2:
         # Call to numba-compiled function, optimized for 2 variables
         return solve_exhaustive_posweights_2(A, y, dicsizes)
