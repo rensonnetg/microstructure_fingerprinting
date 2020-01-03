@@ -627,6 +627,7 @@ def nnls_underdetermined(X, y):
     # State vector: S[i] = 1 marks a positive (passive) variable,
     # S[i] = 0 marks a zero (ative) variable
     S = np.zeros(n, np.int8)
+    PP = np.zeros(0)  # empty positive (passive) set
 
     z = np.zeros(n, np.float64)  # new iterate with better residual
     x = np.zeros(n, np.float64)  # final non-negative solution
