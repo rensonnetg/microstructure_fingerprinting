@@ -16,6 +16,7 @@ SOLVERS
 
 MATH TOOLS
 - vector manipulation scripts
+
 DW-MRI
 - rotation of single-fascicle, multi-shell ("3D") data
 - rotation of single-fascicle, AxCaliber-like ("2D") data
@@ -26,6 +27,16 @@ DW-MRI VISUALIZATION
 
 I/0
 - script to load Matlab-style mat files, more robust than scipy.io.loadmat
+
+IMPORTATION:
+To add this folder to the Python path and be able to load the module:
+
+import os
+import sys
+path_to_mf = os.path.abspath("rel/../or/abs/path/to/MF")
+if path_to_mf not in sys.path:
+    sys.path.insert(0, path_to_mf)
+import mf_utils as mf  # to add the content of mf_utils.py for instance
 
 @author: rensonnetg
 """
@@ -99,6 +110,8 @@ def solve_exhaustive_posweights(A, y, dicsizes, printmsg=None):
     assert isinstance(y, np.ndarray), "y should be a NumPy ndarray"
     if y.dtype is not np.float64:
         y = y.astype(np.float64)
+    # Refuse empty data
+    assert A.size > 0 and y.size > 0, "A and y should not be empty arrays"
     # A.shape[0] should match y
     msg = ("Number of rows in A (%d) should match number of elements in y (%d)"
            % (A.shape[0], y.size))
@@ -130,7 +143,7 @@ def solve_exhaustive_posweights(A, y, dicsizes, printmsg=None):
         # Call to numba-compiled function
         (w_nneg, ind_atoms_subdic, ind_atoms_totdic, min_obj,
          y_recons) = solve_exhaustive_posweights_1(A, y)
-        # force return arrays
+        # force arrays out
         return (np.array([w_nneg]), np.array([ind_atoms_subdic]),
                 np.array([ind_atoms_totdic]), min_obj, y_recons)
     elif Nvars == 2:
@@ -139,7 +152,7 @@ def solve_exhaustive_posweights(A, y, dicsizes, printmsg=None):
     elif Nvars == 3:
         # Call to numba-compiled function, optimized for 3 variables
         return solve_exhaustive_posweights_3(A, y, dicsizes)
-    else:
+    elif Nvars >= 4:
         # Call to built-in scipy.optimize.nnls, no numba optimization
         return solve_exhaustive_posweights_4up(A, y, dicsizes)
 
@@ -769,6 +782,8 @@ def rotate_vector(v, rot_axis, theta):
 
 
 def vrrotvec2mat(rotax, theta):
+    """Rotation matrix from rotation axis and angle.
+    """
     if rotax.size != 3:
         raise ValueError("rotation axis should be a 3-element NumPy array")
     if ~np.isclose(np.sum(rotax**2), 1):
@@ -790,12 +805,49 @@ def vrrotvec2mat(rotax, theta):
 #############################################################################
 
 
-def DT_col_to_2Darray(DT_col):
-    """Reformats 1-D input into 2-D symmetric NumPy array.
+def DT_col_to_2Darray(DT_col, order='row'):
+    """Reformats 1-D input vector (3D) into 3x3 symmetric NumPy array.
+
+    Args:
+      DT_col: (..., 6) NumPy array, where last dimension holds the data
+        defining a real-valued symmetric diffusion tensor.
+      order: 'row' (default) assumes values are provided in the order
+        [xx xy xz yy yz zz], 'column' assumes [xx xy yy xz yz zz] and
+        'diagonal' assumes [xx yy zz xy yz xz]
+
+    Return:
+      (..., 3, 3) NumPy array.
     """
-    return np.array([[DT_col[0], DT_col[1], DT_col[2]],
-                     [DT_col[1], DT_col[3], DT_col[4]],
-                     [DT_col[2], DT_col[4], DT_col[5]]])
+    if DT_col.shape[-1] != 6:
+        raise ValueError("Last dimension of input should have size 6,"
+                         " detected %d." % DT_col.shape[-1])
+
+    out = np.zeros(DT_col.shape[:-1] + (3, 3))
+
+    if order == 'row':
+        (out[..., 0, 0], out[..., 0, 1], out[..., 0, 2],
+         out[..., 1, 0], out[..., 1, 1], out[..., 1, 2],
+         out[..., 2, 0], out[..., 2, 1], out[..., 2, 2]
+         ) = (DT_col[..., 0], DT_col[..., 1], DT_col[..., 2],
+              DT_col[..., 1], DT_col[..., 3], DT_col[..., 4],
+              DT_col[..., 2], DT_col[..., 4], DT_col[..., 5])
+    elif order == 'column':
+        (out[..., 0, 0], out[..., 0, 1], out[..., 0, 2],
+         out[..., 1, 0], out[..., 1, 1], out[..., 1, 2],
+         out[..., 2, 0], out[..., 2, 1], out[..., 2, 2]
+         ) = (DT_col[..., 0], DT_col[..., 1], DT_col[..., 3],
+              DT_col[..., 1], DT_col[..., 2], DT_col[..., 4],
+              DT_col[..., 3], DT_col[..., 4], DT_col[..., 5])
+    elif order == 'diagonal':
+        (out[..., 0, 0], out[..., 0, 1], out[..., 0, 2],
+         out[..., 1, 0], out[..., 1, 1], out[..., 1, 2],
+         out[..., 2, 0], out[..., 2, 1], out[..., 2, 2]
+         ) = (DT_col[..., 0], DT_col[..., 3], DT_col[..., 5],
+              DT_col[..., 3], DT_col[..., 1], DT_col[..., 4],
+              DT_col[..., 5], DT_col[..., 4], DT_col[..., 2])
+    else:
+        raise ValueError("Unknown order option \"%s\"." % order)
+    return out
 
 
 def get_gyromagnetic_ratio(element='H'):
@@ -1115,7 +1167,7 @@ def rotate_atom_2Dprotocol(sig, sch_mat, refdir, newdir, DIFF):
     applied gradients:
         A. Gpar = |sch_mat.gdir * DTI_dir| * sch_mat.G
         B. Gpar = |sch_mat_rot.gdir * [0;0;1]| * sch_mat_rot.G
-    Numerically, the method B introduces fewer round-off errors since
+    Numerically, method B introduces fewer round-off errors since
     sch_mat_rot was the matrix used to generate the signal.
 
     To compute the perpendicular component of the applied gradients:
@@ -1358,7 +1410,7 @@ def interp_PGSE_from_multishell(sch_mat, newdir,
                                 msinterp=None):
     """Single-fascicle PGSE signal interpolated from dense multi-HARDI.
 
-    This script could also be used to perform rotations based on the dense
+    This script can also be used to perform rotations based on the dense
     sampling rather than on the dictionary along the canonical direction.
 
     Args:
@@ -1620,7 +1672,21 @@ def interp_PGSE_from_multishell(sch_mat, newdir,
 
 
 def init_PGSE_multishell_interp(sig_ms, sch_mat_ms, ordir):
+    """Initializes multi-shell interpolator for faster interpolation.
 
+    The output can be provided to interp_PGSE_from_multishell to make
+    interpolation faster.
+
+    Args:
+      sig_ms: 2D NumPy array with shape (Nsampling, Nsubs) or a 1D array with
+        shape (Nsampling,).
+      sch_mat_ms: 2D NumPy array with shape (Nsampling, 7)
+      ordir: NumPy array with 3 elements having unit Euclidean norm.
+
+    Returns:
+      interpolator object with precomputed settings which will make calls to
+        interp_PGSE_from_multishell faster.
+    """
     if ordir.size != 3:
         raise ValueError("Direction of dictionary computed with dense"
                          " sampling (ordir) should have 3 entries.")
@@ -1731,6 +1797,76 @@ def init_PGSE_multishell_interp(sig_ms, sch_mat_ms, ordir):
               'Gms_un': Gms_un,
               'interpolators': interpolators}
     return output
+
+
+def project_PGSE_scheme_xy_plane(sch_mat):
+    """Removes gradients' component along z-axis
+
+    Args:
+      sch_mat: 2D NumPy array or string path to a text file with a one-line
+        header. The first four entries of each row should be
+        [gx, gy, gz, G] where [gx, gy, gz] is a unit-norm vector.
+
+    Returns:
+      The scheme matrix projected in the xy plane, i.e. with gz'=0, [gx', gy']
+      having unit norm and G' such that (gz*G)**2 + G'**2 = G**2.
+    """
+    if isinstance(sch_mat, str):
+        schemefile = sch_mat
+        sch_mat = np.loadtxt(schemefile, skiprows=1)
+    if sch_mat.ndim == 1:
+        sch_mat = sch_mat[np.newaxis, :]
+    # Proportion of gradient intensitiy in xy plane
+    gxy = np.sqrt(sch_mat[:, 0]**2 + sch_mat[:, 1]**2)
+
+    sch_mat_xy = np.zeros(sch_mat.shape)
+    # Adjust gradient magnitudes in xy plane
+    sch_mat_xy[:, 3] = sch_mat[:, 3] * gxy
+    gxy[gxy == 0] = 1  # numerical stability before dividing
+    # Normalize gradient directions to unit norm
+    sch_mat_xy[:, :2] = sch_mat[:, :2]/gxy[:, np.newaxis]
+    # Make sure zero gradients remain zero
+    sch_mat_xy[sch_mat[:, 3] == 0, :4] = 0
+    # Rest of protocol parameters remain unchanged (Del, del, TE)
+    sch_mat_xy[:, 4:] = sch_mat[:, 4:]
+
+    Gz = np.abs(sch_mat[:, 2]) * sch_mat[:, 3]
+    G_chk_sq = sch_mat_xy[:, 3]**2 + Gz**2
+    msg = ("Inconsistency with gradient intensities during"
+           " projection in xy plane")
+    assert np.all(np.abs(np.sqrt(G_chk_sq) - sch_mat[:, 3])
+                  <= 1e-4 * sch_mat[:, 3]), msg  # keep <= for zeros !
+    return sch_mat_xy
+
+
+def import_PGSE_scheme(schemefile):
+    """Import PGSE scheme file or matrix
+
+    Args:
+      schemefile: path to scheme file or NumPy array containing 7 entries per
+        row.
+
+    Returns:
+      Always a 2D NumPy array with 7 entries per row.
+    """
+    if isinstance(schemefile, str):
+        sch_mat = np.loadtxt(schemefile, skiprows=1)
+    elif isinstance(schemefile, np.ndarray):
+        sch_mat = schemefile
+    else:
+        raise TypeError("Unable to import a PGSE scheme matrix from input")
+    if sch_mat.ndim == 1:
+        # Return a 2D row matrix if only one sequence in protocol
+        sch_mat = sch_mat[np.newaxis, :]
+    if sch_mat.shape[1] != 7:
+        raise RuntimeError("Detected %s instead of expected 7 colums in"
+                           " PGSE scheme matrix." % sch_mat.shape[1])
+    grad_norm = np.sqrt(np.sum(sch_mat[:, :3]**2, axis=1))
+    num_bad_norms = np.sum(np.abs(1-grad_norm[grad_norm > 0]) > 1e-4)
+    if num_bad_norms > 0:
+        raise ValueError("Detected %d non-zero gradients which did not have"
+                         " unit norm. Please normalize." % num_bad_norms)
+    return sch_mat
 
 
 def gen_SoS_MRI(S0, sigma_g, N=1):
@@ -1868,7 +2004,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
                              'substrates to plot. Detected %d instead of %d.'
                              % (fascdir.shape[1], num_subs))
     # -- Check plot_distr
-    if plot_distr is None:
+    if not plot_distr:  # None or empty
         plot_distr = list()
         for isub in range(num_subs):
             plot_distr.append([isub])
@@ -1901,16 +2037,18 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
     bcounts = np.zeros(bvals_un.shape)
     for ib in range(bvals_un.shape[0]):
         bcounts[ib] = np.sum(bvals == bvals_un[ib])
-    # we only plot b-values containing at least 2 data points
+    # we only plot b-values containing at least 2 data points, unless it is a
+    # b0 shell
     min_dpoints = 2
-    bvals2plt = bvals_un[bcounts >= min_dpoints]
+    bvals2plt = bvals_un[(bcounts >= min_dpoints) | (bvals_un == 0)]
     numbvals2plt = bvals2plt.size
-    if np.any(bcounts < min_dpoints):
-        print("WARNING: ignoring %d b-shells containing less than %d "
-              "data point. Plotting the other %d shells." %
-              (min_dpoints,
-               np.sum(bcounts < min_dpoints),
-               np.sum(bcounts >= min_dpoints)))
+    if numbvals2plt < bvals_un.size:
+        print("WARNING: ignoring %d non-zero b-shell(s) containing less "
+              "than %d data point(s). Plotting the other %d "
+              "non-zero shells." %
+              (bvals_un.size - numbvals2plt,
+               min_dpoints,
+               numbvals2plt - np.sum(bvals_un==0)))
 
     # Plot parameters
     m_sp_max = 2  # max number of subplot lines on one figure
@@ -2058,6 +2196,8 @@ def plot_signal_2Dprotocol(sig, sch_mat, display_names=None):
     # Set number of 'acquisition lines', i.e. direction irrespective of
     # polarity
     num_lines = 2
+
+    # Set number of figures (i.e., number of Del/del pairs) per figure
     fig_per_plt = 3
 
     # One line style per line in protocol
@@ -2069,14 +2209,20 @@ def plot_signal_2Dprotocol(sig, sch_mat, display_names=None):
     # Analyze PGSE protocol
     Gxy = sch_mat[:, 3]  # here it works since gz=0 everywhere
     gdir_xy = sch_mat[:, :3]  # includes gz always = 0
+
     # Extract unique delta pairs
     Deldel_un, i_un = np.unique(sch_mat[:, 4:6],
                                 return_inverse=True,
                                 axis=0)
     num_Deldels = Deldel_un.shape[0]
+
+    # Max y-value across all plots
+    max_sig = np.max(sig)
+
     for idel in range(num_Deldels):
         if idel % fig_per_plt == 0:
             fig, ax = plt.subplots(1, fig_per_plt, sharey=True)
+            ax[idel % fig_per_plt].set_ylim(top=max_sig)
         ind_del = np.where(i_un == idel)[0]
         gdir_un, ig_un = np.unique(sch_mat[ind_del, :3],
                                    return_inverse=True,
@@ -2131,7 +2277,7 @@ def plot_signal_2Dprotocol(sig, sch_mat, display_names=None):
                 linelabel = "[" + " ".join("%.3f" % e for e in linedir) + "]"
                 if isub == 0:
                     # Label each line once
-                    label = " " * (len(sublabel) + 2) + linelabel
+                    label = " " * (len(sublabel) + 4) + linelabel
                     if idir == 0:
                         label = sublabel + " " + linelabel
                 elif idir == 0:
