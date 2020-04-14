@@ -203,9 +203,11 @@ class MFModel():
             str must be the path to a NIfTI file containing an array.
             A value greater than 0 indicates that the estimation should be
             performed in voxel. Should have shape equal to data.shape[:-1].
-        numfasc : str or NumPy array
+        numfasc : str or NumPy array or scalar
             str must be the path to a NIfTI file containing an array.
             Should have shape equal to mask.shape.
+            Scalar should be a non-negative integer and will assign its
+            value to all data voxels.
 
         (one of peaks, colat_longit or tensors required)
 
@@ -268,6 +270,7 @@ class MFModel():
         # ------------------
         # Required arguments
         # ------------------
+        # DWI Data
         nii_affine = None  # spatial affine transform for DWI data
         if isinstance(data, str):
             st_0 = time.time()
@@ -276,16 +279,16 @@ class MFModel():
             data = nib.load(data).get_data()
             dur_0 = time.time() - st_0
             print("Data loaded in %g s." % dur_0)
+
+        # ROI mask
         if isinstance(mask, str):
             mask = nib.load(mask).get_data()
             if nii_affine is None:
                 nii_affine = nib.load(mask).affine
-        if isinstance(numfasc, str):
-            numfasc = nib.load(numfasc).get_data()
-
         img_shape = mask.shape
         ROI = np.where(mask > 0)  # (x,) (x,y) or (x,y,z)
         ROI_size = ROI[0].size
+
         if ROI_size == 0:
             raise ValueError("No voxel detected in mask. Please provide "
                              "a non-empty mask.")
@@ -297,21 +300,31 @@ class MFModel():
                              (" ".join("%d" % x
                                        for x in data.shape[:-1]),
                               " ".join("%d" % x for x in img_shape)))
-        if mask.shape != numfasc.shape:
-            raise ValueError("Data and argument numfasc not compatible. "
-                             " Based on data, numfasc should have shape (%s),"
-                             " got (%s) instead." %
-                             (" ".join("%d" % x for x in img_shape),
-                              " ".join("%d" % x for x in numfasc.shape)))
-        numfasc = numfasc[mask > 0].astype(np.int)
-        maxfasc = int(np.max(numfasc))
 
+        # Number of fascicles in model
+        if np.isscalar(numfasc) and not isinstance(numfasc, str):
+            # scalar indicator provided for the whole data
+            numfasc = np.full(ROI_size, numfasc, dtype=np.int)
+        else:  # non scalar mode (array of array in file)
+            if isinstance(numfasc, str):
+                numfasc = nib.load(numfasc).get_data()
+            if mask.shape != numfasc.shape:
+                raise ValueError("Data and argument numfasc not compatible. "
+                                 " Based on data, numfasc should have "
+                                 "shape (%s), got (%s) instead." %
+                                 (" ".join("%d" % x for x in img_shape),
+                                  " ".join("%d" % x for x in numfasc.shape)))
+            # reduce to ROI:
+            numfasc = numfasc[mask > 0].astype(np.int)
+
+        maxfasc = int(np.max(numfasc))
         if maxfasc > MFModel.MAX_FASC:
-            raise ValueError("Detected %d mask voxel(s) in numfasc with number"
-                             " of axon populations greater than allowed "
-                             "maximum of %d." %
+            raise ValueError("Detected %d mask voxel(s) in numfasc with"
+                             " number of axon populations greater than"
+                             " allowed maximum of %d." %
                              (np.sum(numfasc > MFModel.MAX_FASC),
                               MFModel.MAX_FASC))
+
         # -------------------
         # (required) Fascicle direction(s)
         #   via one of three options: peaks=, colat_longit=, tensors=
@@ -417,8 +430,9 @@ class MFModel():
             if num_0 > 0:
                 raise ValueError("Detected %d voxel(s) in which the main "
                                  "orientation of axon population %d/%d was "
-                                 "zero, although numfasc specifies the "
-                                 "presence of that population." %
+                                 "a zero vector, although numfasc "
+                                 "specifies the presence of that "
+                                 "population." %
                                  (num_0, n, maxfasc))
 
         # -----------------------------
@@ -578,7 +592,7 @@ class MFModel():
                 subdic_sizes.append(self.dic['num_ear'])
 
             # Perform fingerprinting
-            subdic_sizes = np.array(subdic_sizes)  # to NumPy array
+            subdic_sizes = np.atleast_1d(subdic_sizes)  # to NumPy array
             dicsize = (K*self.dic['num_atom'] + (csf_mask[i] > 0)
                        + (ear_mask[i] > 0) * self.dic['num_ear'])
             y = data[vox+[slice(None)]]  # last dim holds DW-MRI data
@@ -775,6 +789,10 @@ class MFModelFit():
             `affine = loaded_nifti_object.affine`. If not specified, an
             attempt will be made at finding an affine transform
             from the NIfTI files provided during the fitting.
+
+        Returns
+        -------
+        fnames : list of all the files created.
         """
         if affine is None:
             affine = self.affine
@@ -803,8 +821,11 @@ class MFModelFit():
             ext = '.nii'
 
         basename = os.path.join(path, fname)
+        fnames = []
         for p in self.param_names:
             nii = nib.Nifti1Image(getattr(self, p), affine)
             nii_fname = '%s_%s%s' % (basename, p, ext)
             nib.save(nii, nii_fname)
             print("Wrote %s" % nii_fname)
+            fnames.append(nii_fname)
+        return fnames
