@@ -7,6 +7,7 @@ User interface for microstructure fingerprinting following Dipy's style.
 @author: rensonnetg
 """
 import mf_utils as mfu
+import multiprocessing as mp
 import nibabel as nib
 import numpy as np
 import os
@@ -134,12 +135,116 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask):
     return peaks_out, num_fasc_out
 
 
+# top-level definition to make it pickleable for use in parallel estimation
+# with Python's multiprocessing module. Called by MFModel.fit()
+def fit_voxel(i, vox_data, sm):
+    """Performs fingerprinting in one voxel.
+
+    Updates the array containing the fitted parameter values.
+    """
+    st_vox = time.time()
+
+    # Unpack shared memory
+    ROI_size = sm['ROI_size']
+    pgse_scheme = sm['pgse_scheme']
+    ms_interpolator = sm['ms_interpolator']
+    num_atom = sm['num_atom']
+    num_ear = sm['num_ear']
+    maxfasc = sm['maxfasc']
+    csf_on = sm['csf_on']
+    ear_on = sm['ear_on']
+    VRB = sm['VRB']
+    disp_int = sm['disp_int']
+    D = sm['D']  # placeholder for dictionary (saves mem in serial processing)
+
+    # Unpack voxel-specific data
+    y = vox_data['y']
+    K = vox_data['K']
+    csf_i = vox_data['csf_i']
+    ear_i = vox_data['ear_i']
+    peaks_i = vox_data['peaks']
+
+    num_seq = pgse_scheme.shape[0]
+    dicsize = (K*num_atom
+               + (csf_i > 0)
+               + (ear_i > 0) * num_ear)
+
+    # Parameter order: initial magnetization M0, nu_fasc, ID_fasc, nu_csf,
+    # nu_ear, ID_ear, MSE, R2 (coeff. determination)
+    i_csf = 2*maxfasc + 1
+    i_ear = 2*maxfasc + csf_on + 1
+    i_mse = 2*maxfasc + csf_on + 2*ear_on + 1
+    i_R2 = 2*maxfasc + csf_on + 2*ear_on + 2
+    num_params = 1 + maxfasc*2 + csf_on + 2*ear_on + 2
+
+    # Skip voxel if no compartment specified
+    if K + csf_i + ear_i == 0:
+        return np.zeros(num_params)
+
+    # Perform rotations and assemble voxel dictionary
+    for k in range(K):
+        st = k*num_atom
+        end = (k+1)*num_atom
+        D[:, st:end] = mfu.interp_PGSE_from_multishell(
+            pgse_scheme,
+            newdir=peaks_i[3*k:3*k+3],
+            msinterp=ms_interpolator)
+    subdic_sizes = [num_atom] * K  # Python list here
+
+    # Add optional compartments to dictionary
+    if csf_i:
+        D[:, K*num_atom] = sm['sig_csf']
+        subdic_sizes.append(1)
+    if ear_i:
+        st = K*num_atom + (csf_i > 0)
+        fin = st + num_ear
+        D[:, st:fin] = sm['sig_ear']  # only if needed
+        subdic_sizes.append(num_ear)
+
+    # Perform combinatorial non-negative linear least squares
+    subdic_sizes = np.atleast_1d(subdic_sizes)  # to NumPy array
+
+    (w_nnz,
+     ind_subdic,
+     ind_totdic,
+     SoS,
+     y_rec) = mfu.solve_exhaustive_posweights(D[:, :dicsize],
+                                              y,
+                                              subdic_sizes)
+    M0_vox = np.sum(w_nnz)
+    nu = w_nnz/M0_vox
+
+    # Return results as a (num_params,) array
+    params_vox = np.zeros(num_params)
+    params_vox[0] = M0_vox
+    params_vox[1:(K+1)] = nu[:K]  # voxel-wise K !
+    params_vox[(1+maxfasc):(1+maxfasc+K)] = ind_subdic[:K]
+    if csf_i:
+        params_vox[i_csf] = nu[K]
+    if ear_i:
+        params_vox[i_ear] = nu[K + (csf_i > 0)]
+        params_vox[i_ear + 1] = ind_subdic[K + (csf_i > 0)]
+    params_vox[i_mse] = SoS/num_seq
+    params_vox[i_R2] = np.corrcoef(y, y_rec)[0, 1]**2
+
+    time_vox = time.time() - st_vox
+
+    # Display progress
+    if i % disp_int == 0 and VRB >= 3:
+        print("Voxel %d/%d (%d fasc%s%s) estimated in %g sec." %
+              (i+1, ROI_size, K,
+               (", CSF comp" if csf_i else ""),
+               (", EAR comp" if ear_i else ""),
+               time_vox))
+    return params_vox
+
+
 class MFModel():
     r""" Class for the Microstructure Fingerprinting model.
     """
     MAX_FASC = 2  # max number fascicles in a voxel
-    MAX_PROG_LINES = 200  # max number of times fitting progress is displayed
-    DEF_DISP_ITVL = 5  # default interval (in voxels) for printing progress
+    MAX_PROG_LINES = 100  # max number of times fitting progress is displayed
+    DFT_DISP_ITVL = 5  # default interval (in voxels) for printing progress
 
     def __init__(self, dictionary):
         r""" Microstructure Fingerprinting model [1].
@@ -179,7 +284,7 @@ class MFModel():
             self.dic['dictionary'],
             self.dic['sch_mat'],
             self.dic['orientation'])
-        print("Iniated model based on dictionary with %d single-fascicle"
+        print("Initiated model based on dictionary with %d single-fascicle"
               " fingerprint(s) and %d fingerprint(s) for the extra-axonal"
               " restricted (EAR) compartment." %
               (self.dic['num_atom'], self.dic['num_ear']))
@@ -189,7 +294,8 @@ class MFModel():
             data, mask, numfasc, *,  # named keyword arguments after this
             peaks=None, colat_longit=None, tensors=None,  # requires 1 of 3
             pgse_scheme=None, bvals=None, bvecs=None,
-            csf_mask=None, ear_mask=None  # optional
+            csf_mask=None, ear_mask=None,  # optional
+            verbose=1, parallel=False
             ):
         r""" Perform fingerprinting on pre-computed dictionary of MC signals.
 
@@ -252,11 +358,22 @@ class MFModel():
             extra-axonal restricted (EAR) compartment.
             scalar assigns its value to all data voxels.
 
+        verbose : 0 (no display), 1 (important info), 2 (detailed info)
+            or 3 (all info)
+
+        Returns
+        ---------
+        An instance of MFModelFit(), with an attribute for each
+        estimated microstructural parameter in the form of a NumPy array
+        with the same shape as the provided mask.
+
+
         Notes
         --------
         Currently only implemented for PGSE, HARDI-like acquisition schemes.
         Shells can have different timing (Delta, delta) parameters and echo
         times however.
+
 
         References
         ----------
@@ -266,7 +383,7 @@ class MFModel():
         a dictionary of Monte Carlo diffusion MRI simulations. NeuroImage,
         184, pp.964-980.
         """
-
+        VRB = verbose
         # ------------------
         # Required arguments
         # ------------------
@@ -274,55 +391,65 @@ class MFModel():
         nii_affine = None  # spatial affine transform for DWI data
         if isinstance(data, str):
             st_0 = time.time()
-            print("Loading data from file %s..." % data)
+            if VRB >= 2:
+                print("Loading data from file %s..." % data)
             nii_affine = nib.load(data).affine
-            data = nib.load(data).get_data()
+            data_arr = nib.load(data).get_data()
             dur_0 = time.time() - st_0
-            print("Data loaded in %g s." % dur_0)
+            if VRB >= 2:
+                print("Data loaded in %g s." % dur_0)
+        else:
+            data_arr = data  # no need to copy, won't be modified
 
         # ROI mask
         if isinstance(mask, str):
-            mask = nib.load(mask).get_data()
             if nii_affine is None:
                 nii_affine = nib.load(mask).affine
-        img_shape = mask.shape
-        ROI = np.where(mask > 0)  # (x,) (x,y) or (x,y,z)
+            mask_arr = nib.load(mask).get_data()
+        else:
+            mask_arr = mask  # no need to copy, won't be modified
+
+        img_shape = mask_arr.shape
+        ROI = np.where(mask_arr > 0)  # (x,) (x,y) or (x,y,z)
         ROI_size = ROI[0].size
 
         if ROI_size == 0:
             raise ValueError("No voxel detected in mask. Please provide "
                              "a non-empty mask.")
 
-        if data.shape[:-1] != img_shape:
+        if data_arr.shape[:-1] != img_shape:
             raise ValueError("Data and mask not compatible. Based on data,"
                              " mask should have shape (%s), "
                              "got (%s) instead." %
                              (" ".join("%d" % x
-                                       for x in data.shape[:-1]),
+                                       for x in data_arr.shape[:-1]),
                               " ".join("%d" % x for x in img_shape)))
 
         # Number of fascicles in model
         if np.isscalar(numfasc) and not isinstance(numfasc, str):
             # scalar indicator provided for the whole data
-            numfasc = np.full(ROI_size, numfasc, dtype=np.int)
+            numfasc_roi = np.full(ROI_size, numfasc, dtype=np.int)
         else:  # non scalar mode (array of array in file)
             if isinstance(numfasc, str):
-                numfasc = nib.load(numfasc).get_data()
-            if mask.shape != numfasc.shape:
+                numfasc_roi = nib.load(numfasc).get_data()
+            else:  # NumPy array
+                numfasc_roi = numfasc.copy()
+            nfasc_sh = numfasc_roi.shape
+            if mask_arr.shape != nfasc_sh:
                 raise ValueError("Data and argument numfasc not compatible. "
                                  " Based on data, numfasc should have "
                                  "shape (%s), got (%s) instead." %
                                  (" ".join("%d" % x for x in img_shape),
-                                  " ".join("%d" % x for x in numfasc.shape)))
+                                  " ".join("%d" % x for x in nfasc_sh)))
             # reduce to ROI:
-            numfasc = numfasc[mask > 0].astype(np.int)
+            numfasc_roi = numfasc_roi[mask_arr > 0].astype(np.int)
 
-        maxfasc = int(np.max(numfasc))
+        maxfasc = int(np.max(numfasc_roi))
         if maxfasc > MFModel.MAX_FASC:
             raise ValueError("Detected %d mask voxel(s) in numfasc with"
                              " number of axon populations greater than"
                              " allowed maximum of %d." %
-                             (np.sum(numfasc > MFModel.MAX_FASC),
+                             (np.sum(numfasc_roi > MFModel.MAX_FASC),
                               MFModel.MAX_FASC))
 
         # -------------------
@@ -332,26 +459,31 @@ class MFModel():
         peaks_set = False
         if peaks is not None:
             if isinstance(peaks, str):
-                peaks = nib.load(peaks).get_data()
+                # Not strictly in ROI yet, but the name is used to avoid
+                # keeping big array in memory after reduction to ROI below
+                peaks_roi = nib.load(peaks).get_data()
                 if nii_affine is None:
                     nii_affine = nib.load(peaks).affine
-            if peaks.shape[:-1] != img_shape:
+            else:  # NumPy array
+                peaks_roi = peaks.copy()  # same remark as above for "ROI"
+            pk_sh = peaks_roi.shape
+            if pk_sh[:-1] != img_shape:
                 raise ValueError("Arg. peaks not compatible. Based on data,"
                                  " it should have shape (%s x), with x a "
                                  "multiple of 3. Got (%s) instead." %
                                  (" ".join("%d" % x for x in img_shape),
-                                  " ".join("%d" % x for x in peaks.shape)))
-            if peaks.shape[-1] % 3 != 0:
+                                  " ".join("%d" % x for x in pk_sh)))
+            if pk_sh[-1] % 3 != 0:
                 raise ValueError("Size of last dimension of arg. peaks should"
                                  " be a multiple of 3, got %d instead." %
-                                 peaks.shape[-1])
-            if peaks.shape[-1] > maxfasc * 3:
+                                 pk_sh[-1])
+            if pk_sh[-1] > maxfasc * 3 and VRB >= 1:
                 print("Ignoring last %d value(s) along last dimension of"
                       " peaks, as max number of axon populations in mask"
                       " is %d." %
-                      (peaks.shape[-1] - maxfasc * 3, maxfasc))
+                      (pk_sh[-1] - maxfasc * 3, maxfasc))
             # Internal peaks array has shape (np.sum(mask>0), 3*MAX_FASC)
-            peaks = peaks[mask > 0, :3*maxfasc]
+            peaks_roi = peaks_roi[mask_arr > 0, :3*maxfasc]
             peaks_set = True
         elif colat_longit is not None:
             peak_arg = colat_longit
@@ -370,61 +502,64 @@ class MFModel():
             # Make it a list
             if not isinstance(peak_arg, list):
                 peak_arg = [peak_arg]
-            peaks = np.zeros((ROI_size, 3 * len(peak_arg)))
+            peaks_roi = np.zeros((ROI_size, 3 * len(peak_arg)))
             # Iterate through list, ignoring axon populations exceeding
             # the limit (so as to avoid using unnecessary memory)
-            if len(peak_arg) > maxfasc:
+            if len(peak_arg) > maxfasc and VRB >= 1:
                 print("Ignoring %d peak orientation argument(s) because"
                       " max number of axon populations in mask is %d." %
                       (len(peak_arg) - maxfasc, maxfasc))
             for i in range(np.min([len(peak_arg), maxfasc])):
                 if isinstance(peak_arg[i], str):
-                    peak_arg[i] = nib.load(peak_arg[i]).get_data()
+                    peak_arg_i = nib.load(peak_arg[i]).get_data()
                     if nii_affine is None:
                         nii_affine = nib.load(peak_arg[i]).affine
-                if peak_arg[i].shape not in [img_shape + d for d in datadim]:
+                else:
+                    peak_arg_i = peak_arg[i]
+                peak_i_sh = peak_arg_i.shape
+                if peak_i_sh not in [img_shape + d for d in datadim]:
                     msg = ("Peak orientation arg. %d of %d seems "
                            "incompatible. Based on data, it should have"
                            " shape (%s), got (%s) instead." %
                            (i+1, len(peak_arg),
                             " ".join("%d" % x for x in img_shape + datadim),
-                            " ".join("%d" % x for x in peak_arg[i].shape))
+                            " ".join("%d" % x for x in peak_i_sh))
                            )
                     raise ValueError(msg)
                 if colat_longit is not None:
                     # x-component
-                    peaks[:,
-                          3*i + 0] = (np.sin(peak_arg[i][mask > 0, 0]) *
-                                      np.cos(peak_arg[i][mask > 0, 1]))
+                    peaks_roi[:,
+                              3*i + 0] = (np.sin(peak_arg_i[mask_arr > 0, 0]) *
+                                          np.cos(peak_arg_i[mask_arr > 0, 1]))
                     # y-component
-                    peaks[:,
-                          3*i + 1] = (np.sin(peak_arg[i][mask > 0, 0]) *
-                                      np.sin(peak_arg[i][mask > 0, 1]))
+                    peaks_roi[:,
+                              3*i + 1] = (np.sin(peak_arg_i[mask_arr > 0, 0]) *
+                                          np.sin(peak_arg_i[mask_arr > 0, 1]))
                     # z-component
-                    peaks[:,
-                          3*i + 2] = np.cos(peak_arg[i][mask > 0, 0])
+                    peaks_roi[:,
+                              3*i + 2] = np.cos(peak_arg_i[mask_arr > 0, 0])
                 elif tensors is not None:
                     # Get rid of singleton dimension in next-to-last axis
-                    if peak_arg[i].shape[mask.ndim] == 1:
-                        idx = ((slice(None),) * mask.ndim
+                    if peak_i_sh[mask_arr.ndim] == 1:
+                        idx = ((slice(None),) * mask_arr.ndim
                                + (0,) + (slice(None),))
-                        peak_arg[i] = peak_arg[i][idx]
+                        peak_arg_i = peak_arg_i[idx]
                     # Get eigenvectors (eigenvalues in ascending order)
                     (d, eigv) = np.linalg.eigh(
-                        mfu.DT_col_to_2Darray(peak_arg[i][mask > 0, :])
+                        mfu.DT_col_to_2Darray(peak_arg_i[mask_arr > 0, :])
                         )  # shape of tensor file data is nx, ny, nz, 1, 6
                     # Keep main eigenvector in each voxel. Keep zero vectors
                     # for zero matrices (eigh returns unit matrix of
                     # eigenvectors):
-                    peaks[:,
-                          3*i:3*i+3] = (
+                    peaks_roi[:,
+                              3*i:3*i+3] = (
                         eigv[..., -1] * (np.abs(d)[..., -1] > 0)[:,
                                                                  np.newaxis])
 
         for i in range(maxfasc):
             n = i + 1
             peak_L1norm = np.sum(
-                np.abs(peaks[numfasc >= n, (n-1)*3:3*n]),
+                np.abs(peaks_roi[numfasc_roi >= n, (n-1)*3:3*n]),
                 axis=1)
             num_0 = np.sum(peak_L1norm == 0)
             if num_0 > 0:
@@ -485,7 +620,7 @@ class MFModel():
                                  (" ".join("%d" % x for x in img_shape),
                                   " ".join("%d" % x for x in csf_mask.shape)))
             # Reduce array to mask size to reduce memory requirements
-            csf_mask = csf_mask[mask > 0]
+            csf_mask = csf_mask[mask_arr > 0]
         csf_on = np.any(csf_mask > 0)
 
         if ear_mask is None:
@@ -507,15 +642,27 @@ class MFModel():
                                  (" ".join("%d" % x for x in img_shape),
                                   " ".join("%d" % x for x in ear_mask.shape)))
             # Reduce array to mask size to reduce memory requirements
-            ear_mask = ear_mask[mask > 0]
+            ear_mask = ear_mask[mask_arr > 0]
         ear_on = np.any(ear_mask > 0)
 
-        n_empty = np.sum((numfasc + csf_mask + ear_mask) == 0)
-        if n_empty > 0:
+        n_empty = np.sum((numfasc_roi + csf_mask + ear_mask) == 0)
+        if n_empty > 0 and VRB >= 2:
             print("WARNING: detected %d voxel(s) in mask with zero "
                   " axon population, no cerebrospinal fluid (CSF) and no"
                   " extra-axonal restricted (EAR) compartment specified."
                   " No estimation will be performed there." % (n_empty,))
+
+        # ------------------------
+        # Optional: request parallel processing
+        # ------------------------
+        if parallel and mfu.from_ipython() and os.name == 'nt':
+            msg = ("Parallel mode cannot be run from IPython environement"
+                   " (e.g., Spyder GUI) on Windows due to "
+                   "incompatibilities with "
+                   "Python's multiprocessing module. Run the code by"
+                   " directly calling the python interpreter from a "
+                   "regular console.")
+            raise RuntimeError(msg)
 
         # --------------------------------
         # Patient-specific CSF and extra-axonal restricted dictionaries
@@ -533,7 +680,7 @@ class MFModel():
         # Pre-allocate space for multi-compartment dictionary
         # -------------------------------
         num_atom = self.dic['num_atom']
-        max_dicsize = (int(np.max(numfasc)) * num_atom +
+        max_dicsize = (maxfasc * num_atom +
                        csf_on +
                        ear_on * self.dic['num_ear'])
         D = np.zeros((num_seq, max_dicsize))
@@ -541,95 +688,99 @@ class MFModel():
         # Note: peaks, numpeaks, csf and ear are reduced to ROI shape
         # (np.sum(mask>0),)
 
-        # --------------------------------
-        # Preallocate output
-        # --------------------------------
 
-        # Params:
+        # Parameter order:
         # initial magnetization M0, nu_fasc, ID_fasc, nu_csf, nu_ear,
         # ID_ear, MSE, R2 (coeff. determination)
         num_params = 1 + maxfasc*2 + csf_on + 2*ear_on + 2
-        params_in_mask = np.zeros((ROI_size, num_params))
 
-        i_csf = 2*maxfasc + 1
-        i_ear = 2*maxfasc + csf_on + 1
-        i_mse = 2*maxfasc + csf_on + 2*ear_on + 1
-        i_R2 = 2*maxfasc + csf_on + 2*ear_on + 2
+        # Display interval (for printing progress every x voxels)
+        disp_int = int(ROI_size/np.min([ROI_size/MFModel.DFT_DISP_ITVL,
+                                        MFModel.MAX_PROG_LINES]))
+
+        # -------------------------------
+        # Shared memory for external estimation process(es), i.e.
+        # info valid for all voxels
+        # -------------------------------
+        sm = {'D': D,
+              'ROI_size': ROI_size,
+              'pgse_scheme': pgse_scheme,
+              'ms_interpolator': self.ms_interpolator,
+              'num_atom': num_atom,
+              'num_ear': self.dic['num_ear'],
+              'maxfasc': maxfasc,
+              'csf_on': csf_on,
+              'ear_on': ear_on,
+              'VRB': VRB,
+              'disp_int': disp_int
+              }
+        if csf_on:
+            sm['sig_csf'] = sig_csf
+        if ear_on:
+            sm['sig_ear'] = sig_ear
+
 
         # -------------------------------
         # Start estimation
         # -------------------------------
-        disp_int = int(ROI_size/np.min([ROI_size/MFModel.DEF_DISP_ITVL,
-                                        MFModel.MAX_PROG_LINES]))
+
         st_est = time.time()
-        print("Starting estimation in %d voxel(s), displaying progress "
-              "every %d voxel(s)." % (ROI_size, disp_int))
-        for i in range(ROI_size):
-            st_vox = time.time()
 
-            vox = [axis[i] for axis in ROI]  # can be 1D, 2D, 3D, ...
-            K = numfasc[i]
-            # Skip voxel if no compartment specified
-            if K + csf_mask[i] + ear_mask[i] == 0:
-                continue
+        if parallel:
+            # Parallel, multi-process execution
+            n_cpu = int(mp.cpu_count()/1)
+            # chunksize heuristics: number of physical CPUs usually half of
+            # value returned by cpu_count, hence the factor 2.
+            chunksize = int(2*ROI_size/n_cpu)
+            if VRB >= 2:
+                print("Starting estimation in %d voxel(s) in parallel"
+                      " mode, displaying progress every %d voxel(s)." %
+                      (ROI_size, disp_int))
+            with mp.Pool(n_cpu) as pool:
+                # Use iterators to save memory while passing data to processes
+                # Position of ROI voxel i:
+                pos_iter = (tuple(axis[i] for axis in ROI)
+                            for i in range(ROI_size))
+                # DWI data in ROI voxel i:
+                dwi_iter = (data_arr[next(pos_iter) + (slice(None),)]
+                            for _ in range(ROI_size))
+                # Voxel-specific info for estimation bundled in Python dict:
+                vox_data_iter = ({'csf_i': csf_mask[i],
+                                  'ear_i': ear_mask[i],
+                                  'K': numfasc_roi[i],
+                                  'peaks': peaks_roi[i, :],
+                                  'y': next(dwi_iter)}
+                                 for i in range(ROI_size))
+                args_iter = ((i, next(vox_data_iter), sm)
+                             for i in range(ROI_size))
+                # Multiprocessing - launch parallel processes
+                params_in_mask = pool.starmap_async(fit_voxel,
+                                                    args_iter,
+                                                    chunksize).get()
+            params_in_mask = np.array(params_in_mask)
+        else:
+            # single-thread execution
+            if VRB >= 2:
+                print("Starting estimation in %d voxel(s) in serial "
+                      "mode, displaying progress every %d voxel(s)." %
+                      (ROI_size, disp_int))
+            # Pre-allocate output
+            params_in_mask = np.zeros((ROI_size, num_params))
+            for i in range(ROI_size):
+                vox = [axis[i] for axis in ROI]  # can be 1D, 2D, 3D, ...
+                vox = tuple(vox)  # required for array indexing
+                y = data_arr[vox + (slice(None),)]  # last dim holds DWI data
+                vox_data = {'csf_i': csf_mask[i],
+                            'ear_i': ear_mask[i],
+                            'K': numfasc_roi[i],
+                            'peaks': peaks_roi[i, :],
+                            'y': y}
+                params_in_mask[i, :] = fit_voxel(i, vox_data, sm)
 
-            # Perform rotations and assemble voxel dictionary
-            for k in range(K):
-                D[:,
-                  k*num_atom:(k+1)*num_atom] = mfu.interp_PGSE_from_multishell(
-                    pgse_scheme,
-                    newdir=peaks[i, 3*k:3*k+3],
-                    msinterp=self.ms_interpolator)
-            subdic_sizes = [num_atom] * K  # Python list here
-            # Add optional compartments to dictionary
-            if csf_mask[i]:
-                D[:, K*num_atom] = sig_csf
-                subdic_sizes.append(1)
-            if ear_mask[i]:
-                st = K*num_atom + (csf_mask[i] > 0)
-                fin = st + self.dic['num_ear']
-                D[:, st:fin] = sig_ear
-                subdic_sizes.append(self.dic['num_ear'])
 
-            # Perform fingerprinting
-            subdic_sizes = np.atleast_1d(subdic_sizes)  # to NumPy array
-            dicsize = (K*self.dic['num_atom'] + (csf_mask[i] > 0)
-                       + (ear_mask[i] > 0) * self.dic['num_ear'])
-            y = data[vox+[slice(None)]]  # last dim holds DW-MRI data
-            (w_nnz,
-             ind_subdic,
-             ind_totdic,
-             SoS,
-             y_rec) = mfu.solve_exhaustive_posweights(D[:, :dicsize],
-                                                      y,
-                                                      subdic_sizes)
-            M0_vox = np.sum(w_nnz)
-            nu = w_nnz/M0_vox
-
-            # Store results in (ROI_size, num_params) array
-            params_in_mask[i, 0] = M0_vox
-            params_in_mask[i, 1:(K+1)] = nu[:K]  # voxel-wise K !
-            params_in_mask[i, (1+maxfasc):(1+maxfasc+K)] = ind_subdic[:K]
-            if csf_mask[i]:
-                params_in_mask[i, i_csf] = nu[K]
-            if ear_mask[i]:
-                params_in_mask[i, i_ear] = nu[K + (csf_mask[i] > 0)]
-                params_in_mask[i,
-                               i_ear + 1] = ind_subdic[K + (csf_mask[i] > 0)]
-            params_in_mask[i, i_mse] = SoS/num_seq
-            params_in_mask[i, i_R2] = np.corrcoef(y, y_rec)[0, 1]**2
-
-            time_vox = time.time() - st_vox
-
-            # Display progress
-            if i % disp_int == 0:
-                print("Voxel %d/%d (%d fasc%s%s) estimated in %g sec." %
-                      (i+1, ROI_size, K,
-                       (", CSF comp" if csf_mask[i] else ""),
-                       (", EAR comp" if ear_mask[i] else ""),
-                       time_vox))
         time_est = time.time() - st_est
-        print("Estimation performed in %g second(s)." % time_est)
+        if VRB >= 2:
+            print("Estimation performed in %g second(s)." % time_est)
 
         # Return a Dipy-style "fit object" with the info to output model
         # paramters
@@ -637,14 +788,14 @@ class MFModel():
                    'csf_on': csf_on,
                    'ear_on': ear_on,
                    'affine': nii_affine,
-                   'mask': mask,
+                   'mask': mask_arr,
                    'fasc_propnames': [x.strip() for x in
                                       self.dic['fasc_propnames']]}
         for n in fitinfo['fasc_propnames']:
             fitinfo['_' + n] = self.dic[n]  # avoid name collisions
         if ear_on:
             fitinfo['DIFF_ear'] = self.dic['DIFF_ear']
-        return MFModelFit(fitinfo, params_in_mask)
+        return MFModelFit(fitinfo, params_in_mask, verbose=VRB)
 
     def _get_sch_mat_from_bval_bvec(self, bvals, bvecs):
         sch_mat_ref = self.dic['sch_mat']
@@ -694,7 +845,7 @@ class MFModel():
 
 
 class MFModelFit():
-    def __init__(self, fitinfo, model_params):
+    def __init__(self, fitinfo, model_params, verbose=0):
         """
         """
         self.affine = fitinfo['affine']
@@ -766,14 +917,16 @@ class MFModelFit():
         self.param_names = parlist
 
         # Display progress and user instructions
-        print("Microstructure Fingerprinting fit object constructed.")
-        print("Assuming the fit object was named \'MF_fit\', you can access"
-              " property maps (NumPy arrays) via \'MF_fit.property_name\',"
-              " where \'property_name\' can be any of the following:")
-        for p in parlist:
-            print('\t%s' % (p,))
-        print("You can call \'MF_fit.write_nifti\' to write the "
-              "corresponding NIfTI files.")
+        if verbose >= 2:
+            print("Microstructure Fingerprinting fit object constructed.")
+            print("Assuming the fit object was named \'MF_fit\', "
+                  "you can access property maps (NumPy arrays) "
+                  "via \'MF_fit.property_name\',"
+                  " where \'property_name\' can be any of the following:")
+            for p in parlist:
+                print('\t%s' % (p,))
+            print("You can call \'MF_fit.write_nifti\' to write the "
+                  "corresponding NIfTI files.")
 
     def write_nifti(self, output_basename, affine=None):
         """Exports maps of fitted parameter as NIfTI files.
@@ -826,6 +979,5 @@ class MFModelFit():
             nii = nib.Nifti1Image(getattr(self, p), affine)
             nii_fname = '%s_%s%s' % (basename, p, ext)
             nib.save(nii, nii_fname)
-            print("Wrote %s" % nii_fname)
             fnames.append(nii_fname)
         return fnames

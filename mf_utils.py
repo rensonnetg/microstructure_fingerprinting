@@ -1842,20 +1842,20 @@ def project_PGSE_scheme_xy_plane(sch_mat):
     return sch_mat_xy
 
 
-def import_PGSE_scheme(schemefile):
+def import_PGSE_scheme(scheme):
     """Import PGSE scheme file or matrix
 
     Args:
-      schemefile: path to scheme file or NumPy array containing 7 entries per
+      scheme: path to scheme file or NumPy array containing 7 entries per
         row.
 
     Returns:
       Always a 2D NumPy array with 7 entries per row.
     """
-    if isinstance(schemefile, str):
-        sch_mat = np.loadtxt(schemefile, skiprows=1)
-    elif isinstance(schemefile, np.ndarray):
-        sch_mat = schemefile
+    if isinstance(scheme, str):
+        sch_mat = np.loadtxt(scheme, skiprows=1)
+    elif isinstance(scheme, np.ndarray):
+        sch_mat = scheme
     else:
         raise TypeError("Unable to import a PGSE scheme matrix from input")
     if sch_mat.ndim == 1:
@@ -2036,14 +2036,34 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
                              % num_subs)
     diff_time = sch_mat[:, 4]-sch_mat[:, 5]/3
     bvals = (gam*sch_mat[:, 3]*sch_mat[:, 5])**2 * diff_time
-    bvals_un = np.unique(bvals)
+    # bvals_un = np.unique(bvals)  # DEPRECATED
+
+    # New way to account for identical b-values produced by different
+    # combinations of G, Delta, delta.
+    (_,
+     i_sch2G_nosrt,
+     i_b2sch_nosrt) = np.unique(sch_mat[:, 3:6],
+                                return_index=True,
+                                return_inverse=True,
+                                axis=0)
+    i_srt = np.argsort(bvals[i_sch2G_nosrt])
+    bvals_un = bvals[i_sch2G_nosrt][i_srt]  # new way: duplicates possible
+    i_b2sch = np.zeros(i_b2sch_nosrt.size)
+    # Before sorting by b-value, the mapping between GDeldel and the original
+    # protocol is of the type 1 1 1 1 1 2 2 2 2 2 3 3 3 3  1 1 2 2 3 3...
+    # The sorting may lead to a reordering like b2 < b3 < b1, however. The
+    # mapping should therefore become 3 3 3 3 3 1 1 1 1 1 2 2 2 2 3 3 1 1 2 2
+    for i in range(i_srt.size):
+        i_b2sch[i_b2sch_nosrt == i_srt[i]] = i
+
     bcounts = np.zeros(bvals_un.shape)
     for ib in range(bvals_un.shape[0]):
         bcounts[ib] = np.sum(bvals == bvals_un[ib])
-    # we only plot b-values containing at least 2 data points, unless it is a
-    # b0 shell
+    # we only plot non-zero b-values containing at least 2 data points
+    # AND b0 signals (irrespective of number of data points)
     min_dpoints = 2
-    bvals2plt = bvals_un[(bcounts >= min_dpoints) | (bvals_un == 0)]
+    i_bun2plt = np.where((bcounts >= min_dpoints) | (bvals_un == 0))[0]
+    bvals2plt = bvals_un[i_bun2plt]
     numbvals2plt = bvals2plt.size
     if numbvals2plt < bvals_un.size:
         print("WARNING: ignoring %d non-zero b-shell(s) containing less "
@@ -2087,7 +2107,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
             sub_ID_str = substrate_names[subID]
             for ish in range(numbvals2plt):
                 bval = bvals2plt[ish]
-                ind_sh = bvals == bval
+                ind_sh = i_b2sch == i_bun2plt[ish]  # old:bvals == bval
                 Gb = np.unique(sch_mat[ind_sh, 3])
                 Delb = np.unique(sch_mat[ind_sh, 4])
                 delb = np.unique(sch_mat[ind_sh, 5])
@@ -2164,7 +2184,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
     # end for iaxes
 
 
-def plot_signal_2Dprotocol(sig, sch_mat, display_names=None):
+def plot_signal_2Dprotocol(sig, scheme, display_names=None):
     """Plots signals for an AxCaliber-like acquisition protocol.
 
     Splits the data per (Delta, delta) pair, plots 3 pairs per figure. All
@@ -2176,10 +2196,11 @@ def plot_signal_2Dprotocol(sig, sch_mat, display_names=None):
 
     """
     # Check input
+    sch_mat = import_PGSE_scheme(scheme)
+
     if np.any(sch_mat[:, 2] != 0):
         raise ValueError("Use the original schemefile with zeros for gz")
     if sig.ndim == 1:
-        # raise ValueError("Plot one signal at a time: sig should be 1D")
         sig = sig[:, np.newaxis]
     elif sig.ndim > 2:
         raise ValueError("sig should be a 1D or 2D NumPy array, detected"
