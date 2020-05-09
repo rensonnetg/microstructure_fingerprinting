@@ -2,16 +2,32 @@
 Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion fingerprints
 
 ## Import
-At the top of your Python script, add
+
+### Occasional use
+If you don't plan to use this library on a regular basis, it may be best to manually import it just when you need it. At the top of your Python script, add
 ```
 import os
 import sys
-# path to MF source files (could simply be '.' if current directory)
-path_to_mf = os.path.abspath('path/to/loaded/folder/called/microstructure_fingerprinting')
+# path to MF source files (the folder containing the actual mf.py, mf_utils.py files, etc.)
+path_to_mf = os.path.abspath('path/to/loaded/folder/called/microstructure_fingerprinting/microstructure_fingerprinting')
 if path_to_mf not in sys.path:
     sys.path.insert(0, path_to_mf)
 import mf
 import mf_utils as mfu
+```
+### Frequent use
+For a more frequent use of the library, you may wish to permanently add the package to your current Python environment.
+
+Navigate to the folder where this repository was cloned or downloaded (the folder containing the ```setup.py``` file) and install the package:
+```
+> cd microstructure_fingerprinting
+> python setup.py install
+```
+
+At the top of your Python scripts add
+```
+import microstructure_fingerprinting as mf
+import microstructure_fingerprinting.mf_utils as mfu
 ```
 
 ## Usage
