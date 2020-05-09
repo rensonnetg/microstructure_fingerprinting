@@ -6,7 +6,13 @@ User interface for microstructure fingerprinting following Dipy's style.
 
 @author: rensonnetg
 """
-import mf_utils as mfu
+try:
+    # package added to Python environment
+    from . import mf_utils as mfu
+except ImportError:
+    # local, occasional use
+    import mf_utils as mfu
+
 import multiprocessing as mp
 import nibabel as nib
 import numpy as np
@@ -14,35 +20,89 @@ import os
 import time
 
 
-def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask):
+def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask, frac12=None):
+    """Cleans up detected fascicle orientations (or "peaks").
+
+    Applies the method described in [1] which selects 0, 1 or 2 of the 2
+    detected peaks and updates their orientations based on the detected
+    fascicles' weights and orientations.
+
+    Returns
+    ---------
+    peaks_out: NumPy array with ndim = frac1.ndim + 1 and with shape[-1]=6. In
+        each data voxel, the first three entries represent the orientation of
+        the first fascicle, the last three of the second fascicle. Entries
+        set to zero if no fascicle detected.
+    num_fasc_out: NumPy array with same shape as frac1. Contains the number
+        detected fascicles in each voxel.
+
+    References
+    ----------
+    .. [1] Rensonnet, G., Scherrer, B., Girard, G., Jankovski, A.,
+    Warfield, S.K., Macq, B., Thiran, J.P. and Taquet, M., 2019. Towards
+    microstructure fingerprinting: Estimation of tissue properties from
+    a dictionary of Monte Carlo diffusion MRI simulations. NeuroImage,
+    184, pp.964-980.
+    """
     # if ratio of large fasc over small fasc is more than this, small fasc is
     # discarded unless its relative weight exceeded the keep threshold
-    ratio = 2.5
+    ratio = 3.0
     # relative weight above which no fascicle can ever be discarded
-    w_keep = 0.20
+    w_keep = 0.18
     # relative weight under which a fascicle is discarded
     w_small = 0.10
     # crossing angle under which 2 orientations are merged [deg]
     ang_min = 15
 
+    if isinstance(mask, str):
+        mask = nib.load(mask).get_data()
     if isinstance(frac1, str):
         frac1 = nib.load(frac1).get_data()
     if isinstance(frac2, str):
         frac2 = nib.load(frac2).get_data()
+
+    if frac12 is not None:
+        if isinstance(frac12, str):
+            frac12 = nib.load(frac12).get_fdata()
+        if frac12.shape[-1] < 2:
+            raise ValueError("Last dimension of frac12 should have size"
+                             " at least 2.")
+        # Overwrites frac1 and frac2 if those had been set
+        if frac12.shape[mask.ndim] == 1:
+            # data has shape (Nx, Ny, Nz, 1, 2) => get rid of singleton dim
+            frac1 = frac12[..., 0, 0]
+            frac2 = frac12[..., 0, 1]
+        else:
+            frac1 = frac12[..., 0]
+            frac2 = frac12[..., 1]
+
     if isinstance(mu1, str):
         mu1 = nib.load(mu1).get_data()
     if isinstance(mu2, str):
         mu2 = nib.load(mu2).get_data()
-    if isinstance(mask, str):
-        mask = nib.load(mask).get_data()
+
     if frac1.shape != mask.shape:
         raise ValueError("frac1 should have the same shape as mask")
     if frac2.shape != mask.shape:
         raise ValueError("frac2 should have the same shape as mask")
-    if mu1.shape[-1] != 2:
-        raise ValueError("last dimension of mu1 should be 2")
-    if mu2.shape[-1] != 2:
-        raise ValueError("last dimension of mu2 should be 2")
+
+    peakmode = ''
+    if mu1.shape[-1] == 2 and mu2.shape[-1] == 2:
+        peakmode = 'colat_longit'
+    elif mu1.shape[-1] == 6 and mu1.shape[-1] == 6:
+        peakmode = 'tensor'
+        # shape of tensor file data is often nx, ny, nz, 1, 6
+        # Get rid of singleton dimension in next-to-last axis
+        if mu1.shape[mask.ndim] == 1:
+            mu1 = mu1[..., 0, :]
+        if mu2.shape[mask.ndim] == 1:
+            mu2 = mu2[..., 0, :]
+    else:
+        raise ValueError("last dimension of mu1 and mu2 should have "
+                         "sizes 2 (colatitute-longitude) or 6 (positive-"
+                         "definite symmetric tensor). Detected %d and %d."
+                         % (mu1.shape[-1], mu2.shape[-1]))
+
     ROI_size = np.sum(mask > 0)
     frac1 = frac1[mask > 0]
     frac2 = frac2[mask > 0]
@@ -57,23 +117,43 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask):
     peaks = np.zeros((ROI_size, 6))
     num_fasc = np.ones(ROI_size) * 2
 
-    # From colatitude-longitude to x-y-z coordinates
-    (x1, y1, z1) = (np.sin(mu1[..., 0]) * np.cos(mu1[..., 1]),
-                    np.sin(mu1[..., 0]) * np.sin(mu1[..., 1]),
-                    np.cos(mu1[..., 0]))
-    (x2, y2, z2) = (np.sin(mu2[..., 0]) * np.cos(mu2[..., 1]),
-                    np.sin(mu2[..., 0]) * np.sin(mu2[..., 1]),
-                    np.cos(mu2[..., 0]))
-    peaks[:, 0] = x1
-    peaks[:, 1] = y1
-    peaks[:, 2] = z1
-    peaks[:, 3] = x2
-    peaks[:, 4] = y2
-    peaks[:, 5] = z2
+    if peakmode == 'colat_longit':
+        # From colatitude-longitude to x-y-z coordinates
+        (x1, y1, z1) = (np.sin(mu1[..., 0]) * np.cos(mu1[..., 1]),
+                        np.sin(mu1[..., 0]) * np.sin(mu1[..., 1]),
+                        np.cos(mu1[..., 0]))
+        (x2, y2, z2) = (np.sin(mu2[..., 0]) * np.cos(mu2[..., 1]),
+                        np.sin(mu2[..., 0]) * np.sin(mu2[..., 1]),
+                        np.cos(mu2[..., 0]))
+        peaks[:, 0] = x1
+        peaks[:, 1] = y1
+        peaks[:, 2] = z1
+        peaks[:, 3] = x2
+        peaks[:, 4] = y2
+        peaks[:, 5] = z2
+    elif peakmode == 'tensor':
+        # Get eigenvectors (eigenvalues in ascending order)
+        (d1, eigv1) = np.linalg.eigh(
+            mfu.DT_col_to_2Darray(mu1)
+            )
+        (d2, eigv2) = np.linalg.eigh(
+            mfu.DT_col_to_2Darray(mu2)
+            )
+        # Keep main eigenvector in each voxel. Keep zero vectors
+        # for zero matrices (eigh returns matrix of unit
+        # eigenvectors instead of all zeros):
+        mask_ev1 = (np.abs(d1)[..., -1] > 0)[:, np.newaxis]  # (Nx, Ny, Nz, 1)
+        peaks[:, :3] = eigv1[..., -1] * mask_ev1  # (Nx, Ny, Nz, 3)
+        mask_ev2 = (np.abs(d2)[..., -1] > 0)[:, np.newaxis]
+        peaks[:, 3:6] = eigv2[..., -1] * mask_ev2
+    else:
+        raise RuntimeError("Unknown peak mode %s (should never get here)."
+                           % (peakmode,))
 
     # Detect and merge confounded directions into direction 1
     dp_max = np.cos(ang_min * np.pi / 180)
-    dp = x1*x2 + y1*y2 + z1*z2
+    dp = np.sum(peaks[:, :3] * peaks[:, 3:6], axis=-1)  # x1*x2 + y1*y2 + z1*z2
+    # dp = x1*x2 + y1*y2 + z1*z2
     dp_abs = np.abs(np.clip(dp, -1, 1))
     merge = dp_abs > dp_max
     n_merge = np.sum(merge)
@@ -109,7 +189,7 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask):
         frac_clean[f1small, 1] = 0
         num_fasc[f1small] = (frac_clean[f1small, 0] > 0) * 1
 
-    # Get rid of small (abslute) weights ignored by previous step
+    # Get rid of small (absolute) weights ignored by previous step
     # (one weight could be comparable to another weight but both weights
     # could still be very small)
     w0small = frac_clean[:, 0] < w_small
@@ -137,10 +217,13 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask):
 
 # top-level definition to make it pickleable for use in parallel estimation
 # with Python's multiprocessing module. Called by MFModel.fit()
-def fit_voxel(i, vox_data, sm):
+def _fit_voxel(i, vox_data, sm):
     """Performs fingerprinting in one voxel.
 
-    Updates the array containing the fitted parameter values.
+    Returns:
+        A vector (1-D NumPy array) containing the voxel parameters of the
+        estimated model. The order of the parameters follows the convention
+        used in MFModel.fit().
     """
     st_vox = time.time()
 
@@ -177,9 +260,12 @@ def fit_voxel(i, vox_data, sm):
     i_R2 = 2*maxfasc + csf_on + 2*ear_on + 2
     num_params = 1 + maxfasc*2 + csf_on + 2*ear_on + 2
 
+    # Pre-allocate output
+    params_vox = np.zeros(num_params)
+
     # Skip voxel if no compartment specified
     if K + csf_i + ear_i == 0:
-        return np.zeros(num_params)
+        return params_vox
 
     # Perform rotations and assemble voxel dictionary
     for k in range(K):
@@ -215,17 +301,29 @@ def fit_voxel(i, vox_data, sm):
     nu = w_nnz/M0_vox
 
     # Return results as a (num_params,) array
-    params_vox = np.zeros(num_params)
+
+    # Baseline signal M0 after factoring out NMR relaxation and diffusion
+    # attenuation (representative of initial transverse magnetization after
+    # 90-degree radio-frequency pulse):
     params_vox[0] = M0_vox
-    params_vox[1:(K+1)] = nu[:K]  # voxel-wise K !
+    # Physical volume fractions of fascicle(s):
+    params_vox[1:(K+1)] = nu[:K]  # (voxel-wise K)
+    # Index of selected DW-MRI fingerprint in each fascicle sub-dictionary:
     params_vox[(1+maxfasc):(1+maxfasc+K)] = ind_subdic[:K]
     if csf_i:
+        # Physical volume fraction of cerebrospinal fluid compartment:
         params_vox[i_csf] = nu[K]
     if ear_i:
+        # Physical volume fraction of extra-axonal restricted compartment:
         params_vox[i_ear] = nu[K + (csf_i > 0)]
+        # Index of selected DW-MRI fingerprint in EAR sub-dictionary:
         params_vox[i_ear + 1] = ind_subdic[K + (csf_i > 0)]
+    # Mean-squared-error in voxel between measured and predicted signal:
     params_vox[i_mse] = SoS/num_seq
-    params_vox[i_R2] = np.corrcoef(y, y_rec)[0, 1]**2
+    # Coefficient of determination, essentially Pearson's correlation
+    # coefficient squared in voxel between measured and predicted signal
+    if num_seq > 1 and np.std(y_rec) > 0 and np.std(y) > 0:
+        params_vox[i_R2] = np.corrcoef(y, y_rec)[0, 1]**2
 
     time_vox = time.time() - st_vox
 
@@ -290,6 +388,80 @@ class MFModel():
               (self.dic['num_atom'], self.dic['num_ear']))
         # TODO: check consistency of dictionary
 
+    def _get_sch_mat_from_bval_bvec(self, bvals, bvecs):
+        """Generates PGSE scheme matrix from bval and bvec files or arrays.
+
+        Parameters
+        ----------
+        bvals: str or NumPy array
+            b-values in ms/mm^2 (typically around 1000)
+        bvecs: str or NumPy array
+            unit-norm 3D vectors (will be transposed automatically)
+
+        Returns
+        ---------
+        sch_mat: 2-D NumPy array with shape (n_seq, 7)
+        """
+        sch_mat_ref = self.dic['sch_mat']
+        if isinstance(bvals, str):
+            bvals = np.loadtxt(bvals)
+        if isinstance(bvecs, str):
+            bvecs = np.atleast_2d(np.loadtxt(bvecs))
+
+        # bvals from ms/mm^2 to s/m^2
+        bvals = bvals * 1e6
+
+        # Check bvecs
+        if np.ndim(bvecs) != 2:
+            raise ValueError("bvecs array should have 2 dimensions,"
+                             " detected %d." % bvecs.ndim)
+        if bvecs.shape[0] != bvals.size and bvecs.shape[1] != bvals.size:
+            raise ValueError("Number of b-vectors does not match number"
+                             " of b-values (%d)" % bvals.size)
+
+        # Preallocate sheme matrix and transpose bvecs if needed
+        sch_mat = np.zeros((bvals.size, 7))
+        if bvecs.shape[0] == 3:
+            sch_mat[:, :3] = bvecs.transpose()
+        elif bvecs.shape[1] == 3:
+            sch_mat[:, :3] = bvecs
+        else:
+            raise ValueError("Vectors in bvecs should be 3-dimensional."
+                             " However, detected no dimension with size 3.")
+
+        # Normalize gradient directions
+        gnorm = np.sqrt(np.sum(sch_mat[:, :3]**2, axis=1))
+        sch_mat[gnorm > 0, :3] = (sch_mat[gnorm > 0, :3] /
+                                  gnorm[gnorm > 0][:, np.newaxis])
+
+        # Get gradient intensity from bval assuming unique Delta/deta
+        gam = mfu.get_gyromagnetic_ratio('H')
+        Del_prot = sch_mat_ref[0, 4]
+        del_prot = sch_mat_ref[0, 5]
+        TE_prot = sch_mat_ref[0, 6]
+        G = np.sqrt(bvals/(Del_prot - del_prot/3))/(gam*del_prot)
+        Geff = np.zeros(bvals.shape[0])
+
+        # Map each bval to reference G within a given tolerance
+        G_target = np.unique(sch_mat_ref[:, 3])
+        Gtol = 1e-3
+        G_un_eff = np.zeros(G_target.size)
+
+        grads_per_shell = np.zeros(G_target.size)  # for sanity check
+        for ig in range(G_target.size):
+            i_shell = np.where(np.abs(G_target[ig] - G) < Gtol)[0]
+            grads_per_shell[ig] = i_shell.size
+            G_un_eff[ig] = G_target[ig]  # np.mean(G[i_shell])
+            Geff[i_shell] = G_target[ig]
+        chk = G.size == np.sum(grads_per_shell)
+        assert chk, ("%d distinct b-values vs expected %d" %
+                     (np.sum(grads_per_shell), G.size))
+        sch_mat[:, 3] = Geff
+
+        # Copy and paste unique reference timing parameters
+        sch_mat[:, 4:7] = np.array([Del_prot, del_prot, TE_prot])
+        return sch_mat
+
     def fit(self,
             data, mask, numfasc, *,  # named keyword arguments after this
             peaks=None, colat_longit=None, tensors=None,  # requires 1 of 3
@@ -345,8 +517,11 @@ class MFModel():
         bvals : str or NumPy array
             str must be the path to a text file
             array should have shape (Nseq,)
+            The b-values should have units of ms/mm^2 (~1000), typical of
+            clinical usage.
         bvecs : str or NumPy array
-
+            Should contain unit-norm vectors. Shape can be (Nseq, 3) or
+            (3, Nseq) interchangeably.
         csf_mask : str or NumPy array or scalar (optional)
             str must be the path to a NIfTI file containing an array.
             Entries x such that x>0 evaluates to True indicate voxels with a
@@ -359,7 +534,7 @@ class MFModel():
             scalar assigns its value to all data voxels.
 
         verbose : 0 (no display), 1 (important info), 2 (detailed info)
-            or 3 (all info)
+            or 3 (all info) printed to standard output
 
         Returns
         ---------
@@ -431,9 +606,12 @@ class MFModel():
             numfasc_roi = np.full(ROI_size, numfasc, dtype=np.int)
         else:  # non scalar mode (array of array in file)
             if isinstance(numfasc, str):
+                # Strictly speaking, the array here is not restricted to the
+                # ROI yet but it will be later. This way we don't keep a big
+                # array in memory after reduction to ROI.
                 numfasc_roi = nib.load(numfasc).get_data()
             else:  # NumPy array
-                numfasc_roi = numfasc.copy()
+                numfasc_roi = numfasc
             nfasc_sh = numfasc_roi.shape
             if mask_arr.shape != nfasc_sh:
                 raise ValueError("Data and argument numfasc not compatible. "
@@ -465,7 +643,7 @@ class MFModel():
                 if nii_affine is None:
                     nii_affine = nib.load(peaks).affine
             else:  # NumPy array
-                peaks_roi = peaks.copy()  # same remark as above for "ROI"
+                peaks_roi = peaks  # same remark as above for "ROI"
             pk_sh = peaks_roi.shape
             if pk_sh[:-1] != img_shape:
                 raise ValueError("Arg. peaks not compatible. Based on data,"
@@ -487,10 +665,10 @@ class MFModel():
             peaks_set = True
         elif colat_longit is not None:
             peak_arg = colat_longit
-            datadim = [(2,)]  # colatitute and longitude
+            datadim = ((2,),)  # colatitute and longitude
         elif tensors is not None:
             peak_arg = tensors
-            datadim = [(6,), (1, 6)]  # real-valued symmetric tensor
+            datadim = ((6,), (1, 6))  # real-valued symmetric tensor
         else:
             raise RuntimeError("At least one of peaks, colat_longit and"
                                " tensors must be specified.")
@@ -518,24 +696,28 @@ class MFModel():
                     peak_arg_i = peak_arg[i]
                 peak_i_sh = peak_arg_i.shape
                 if peak_i_sh not in [img_shape + d for d in datadim]:
+                    data_dim_str = " or ".join(
+                            "(" + " ".join("%d" % x for x in img_shape + ddim)
+                            + ")"
+                            for ddim in datadim)
                     msg = ("Peak orientation arg. %d of %d seems "
                            "incompatible. Based on data, it should have"
-                           " shape (%s), got (%s) instead." %
+                           " shape %s, got (%s) instead." %
                            (i+1, len(peak_arg),
-                            " ".join("%d" % x for x in img_shape + datadim),
+                            data_dim_str,
                             " ".join("%d" % x for x in peak_i_sh))
                            )
                     raise ValueError(msg)
                 if colat_longit is not None:
-                    # x-component
+                    # x-component = sin(th)*cos(phi)
                     peaks_roi[:,
                               3*i + 0] = (np.sin(peak_arg_i[mask_arr > 0, 0]) *
                                           np.cos(peak_arg_i[mask_arr > 0, 1]))
-                    # y-component
+                    # y-component = sin(th)*sin(phi)
                     peaks_roi[:,
                               3*i + 1] = (np.sin(peak_arg_i[mask_arr > 0, 0]) *
                                           np.sin(peak_arg_i[mask_arr > 0, 1]))
-                    # z-component
+                    # z-component = cos(th)
                     peaks_roi[:,
                               3*i + 2] = np.cos(peak_arg_i[mask_arr > 0, 0])
                 elif tensors is not None:
@@ -549,7 +731,7 @@ class MFModel():
                         mfu.DT_col_to_2Darray(peak_arg_i[mask_arr > 0, :])
                         )  # shape of tensor file data is nx, ny, nz, 1, 6
                     # Keep main eigenvector in each voxel. Keep zero vectors
-                    # for zero matrices (eigh returns unit matrix of
+                    # for zero matrices (eigh returns matrix of unit
                     # eigenvectors):
                     peaks_roi[:,
                               3*i:3*i+3] = (
@@ -688,7 +870,6 @@ class MFModel():
         # Note: peaks, numpeaks, csf and ear are reduced to ROI shape
         # (np.sum(mask>0),)
 
-
         # Parameter order:
         # initial magnetization M0, nu_fasc, ID_fasc, nu_csf, nu_ear,
         # ID_ear, MSE, R2 (coeff. determination)
@@ -719,7 +900,6 @@ class MFModel():
         if ear_on:
             sm['sig_ear'] = sig_ear
 
-
         # -------------------------------
         # Start estimation
         # -------------------------------
@@ -731,7 +911,7 @@ class MFModel():
             n_cpu = int(mp.cpu_count()/1)
             # chunksize heuristics: number of physical CPUs usually half of
             # value returned by cpu_count, hence the factor 2.
-            chunksize = int(2*ROI_size/n_cpu)
+            chunksize = max(1, int(2*ROI_size/n_cpu))
             if VRB >= 2:
                 print("Starting estimation in %d voxel(s) in parallel"
                       " mode, displaying progress every %d voxel(s)." %
@@ -754,10 +934,11 @@ class MFModel():
                 args_iter = ((i, next(vox_data_iter), sm)
                              for i in range(ROI_size))
                 # Multiprocessing - launch parallel processes
-                params_in_mask = pool.starmap_async(fit_voxel,
+                params_in_mask = pool.starmap_async(_fit_voxel,
                                                     args_iter,
                                                     chunksize).get()
             params_in_mask = np.array(params_in_mask)
+
         else:
             # single-thread execution
             if VRB >= 2:
@@ -775,15 +956,14 @@ class MFModel():
                             'K': numfasc_roi[i],
                             'peaks': peaks_roi[i, :],
                             'y': y}
-                params_in_mask[i, :] = fit_voxel(i, vox_data, sm)
-
+                params_in_mask[i, :] = _fit_voxel(i, vox_data, sm)
 
         time_est = time.time() - st_est
         if VRB >= 2:
             print("Estimation performed in %g second(s)." % time_est)
 
         # Return a Dipy-style "fit object" with the info to output model
-        # paramters
+        # parameters
         fitinfo = {'maxfasc': maxfasc,
                    'csf_on': csf_on,
                    'ear_on': ear_on,
@@ -792,56 +972,10 @@ class MFModel():
                    'fasc_propnames': [x.strip() for x in
                                       self.dic['fasc_propnames']]}
         for n in fitinfo['fasc_propnames']:
-            fitinfo['_' + n] = self.dic[n]  # avoid name collisions
+            fitinfo['_' + n] = self.dic[n]  # prepend _ for name collisions
         if ear_on:
             fitinfo['DIFF_ear'] = self.dic['DIFF_ear']
         return MFModelFit(fitinfo, params_in_mask, verbose=VRB)
-
-    def _get_sch_mat_from_bval_bvec(self, bvals, bvecs):
-        sch_mat_ref = self.dic['sch_mat']
-        if isinstance(bvals, str):
-            bvals = np.loadtxt(bvals) * 1e6
-        if isinstance(bvecs, str):
-            bvecs = np.loadtxt(bvecs)
-
-        sch_mat = np.zeros((bvals.size, 7))
-        if bvecs.shape[0] == 3:
-            sch_mat[:, :3] = bvecs.transpose()
-        elif bvecs.shape[1] == 3:
-            sch_mat[:, :3] = bvecs
-
-        # Normalize gradient directions
-        gnorm = np.sqrt(np.sum(sch_mat[:, :3]**2, axis=1))
-        sch_mat[gnorm > 0, :3] = (sch_mat[gnorm > 0, :3] /
-                                  gnorm[gnorm > 0][:, np.newaxis])
-
-        # Get gradient intensity from bval assuming unique Delta/deta
-        gam = mfu.get_gyromagnetic_ratio('H')
-        Del_prot = sch_mat_ref[0, 4]
-        del_prot = sch_mat_ref[0, 5]
-        TE_prot = sch_mat_ref[0, 6]
-        G = np.sqrt(bvals/(Del_prot - del_prot/3))/(gam*del_prot)
-        Geff = np.zeros(bvals.shape[0])
-
-        # Map each bval to reference G within a given tolerance
-        G_target = np.unique(sch_mat_ref[:, 3])
-        Gtol = 1e-3
-        G_un_eff = np.zeros(G_target.size)
-
-        grads_per_shell = np.zeros(G_target.size)  # for sanity check
-        for ig in range(G_target.size):
-            i_shell = np.where(np.abs(G_target[ig] - G) < Gtol)[0]
-            grads_per_shell[ig] = i_shell.size
-            G_un_eff[ig] = G_target[ig]  # np.mean(G[i_shell])
-            Geff[i_shell] = G_target[ig]
-        chk = G.size == np.sum(grads_per_shell)
-        assert chk, ("%d distinct b-values vs expected %d" %
-                     (np.sum(grads_per_shell), G.size))
-        sch_mat[:, 3] = Geff
-
-        # Copy and paste unique reference timing parameters
-        sch_mat[:, 4:7] = np.array([Del_prot, del_prot, TE_prot])
-        return sch_mat
 
 
 class MFModelFit():

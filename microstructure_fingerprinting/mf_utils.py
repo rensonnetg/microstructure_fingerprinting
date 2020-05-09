@@ -40,6 +40,9 @@ if path_to_mf not in sys.path:
     sys.path.insert(0, path_to_mf)
 import mf_utils as mf
 
+TODO: do not require matplotlib. See for instance
+https://github.com/dipy/dipy/blob/master/dipy/utils/optpkg.py
+
 @author: rensonnetg
 """
 from itertools import product
@@ -2330,15 +2333,23 @@ def monte_carlo_average(sim_phases, delta_mapping, gscaling, Dscaling,
                         num_spins):
     """Compute Monte Carlo signal as average of spins' dephasing.
 
+    Numba-optimized script for efficiently computing the Monte Carlo average
+    of the spins' contributions to the DW-MRI signal:
+        S_i = (1/n_spin) * sum_{l=1}^{n_spin} cos(Dscaling * phi_{l,i})
+            where phi_{l,i} = sum_{n=1}^{n_dim} phi_{l,i,n},
+            with phi_{l,i,n} =
+                   phi_sim_{l,delta_map(i),n} * G_{i,n}/G_sim_{delta_map(i),n}
+        for i = 1,..., n_seq.
+
     Args:
         sim_phases: 2D NumPy array with shape (n_spin, n_dim) containing the
           accumulated phase of each spin due to each basis function of the
           applied gradient waveform (e.g., x, y, z components of a PGSE)
-        delta_mapping: 1D NumPy array with shape (n_seq,) with entries in
-          [0, n_ref] specifying the mapping between an acquisition in the
-          new protocol and the reference acquisition it is computed from,
-          i.e., which column of sim_phases should be used for each sequence
-          in the new protocol.
+        delta_mapping: 1D NumPy array with shape (n_seq,) with integer
+          entries between 0 and n_ref-1 specifying the mapping between
+          an acquisition in the new protocol and the reference
+          acquisition it is computed from, i.e., which column of
+          sim_phases should be used for each sequence in the new protocol.
         gscaling: 2D NumPy array with shape (n_seq, n_dim), specifying the
           ratio between the gradient intensity of each acquisition in the new
           protocol and that in the reference simulation.
@@ -2347,6 +2358,11 @@ def monte_carlo_average(sim_phases, delta_mapping, gscaling, Dscaling,
           signal phases.
         num_spins: number of spins used in the MC simulation which generated
           the signal phases (also referred to as n_spin).
+
+    Returns:
+        signal: 1-D NumPy array with n_seq entries. The Monte Carlo DW-MRI
+          signal corresponding to the new protocol indirectly described
+          by delta_mapping and gscaling.
     """
     num_seq = delta_mapping.shape[0]
     dim = sim_phases.shape[1]
