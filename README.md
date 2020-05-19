@@ -1,7 +1,11 @@
 # microstructure_fingerprinting
-Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion fingerprints
+Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion MRI fingerprints in Python 3.
 
-## Import
+## Installing & importing
+Download a copy of this repository
+```
+> git clone https://github.com/rensonnetg/microstructure_fingerprinting.git
+```
 
 ### Occasional use
 If you don't plan to use this library on a regular basis, it may be best to manually import it just when you need it. At the top of your Python script, add
@@ -18,20 +22,20 @@ import mf_utils as mfu
 ### Frequent use
 For a more frequent use of the library, you may wish to permanently add the package to your current Python environment.
 
-Navigate to the folder where this repository was cloned or downloaded (the folder containing the ```setup.py``` file) and install the package:
+Navigate to the folder where this repository was cloned or downloaded (the folder containing the ```setup.py``` file) and install the package as follows
 ```
 > cd microstructure_fingerprinting
 > python setup.py install
 ```
 
-At the top of your Python scripts add
+At the top of your Python scripts, import the library as
 ```
 import microstructure_fingerprinting as mf
 import microstructure_fingerprinting.mf_utils as mfu
 ```
 
 ## Usage
-### DIPY-style interface
+### [DIPY](https://dipy.org/)-style interface
 ```
 dictionary_file = 'mf_dictionary.mat'
 
@@ -62,7 +66,10 @@ The main function of the toolbox is ```solve_exhaustive_posweights```, which you
 
 Rotating the dictionary along each fascicle's direction in each voxel is currently supported for multi-shell PGSE protocols and AxCaliber-like PGSE protocols (gradients in xy plane only), for fascicles assumed to have cylindrical symmetry, well described by one principal orientation. In the case of multi-shell protocols, use ```mfu.rotate_atom``` or alternatively ```mfu.interp_PGSE_from_multishell``` which can be made faster by a prior call to ```mfu.init_PGSE_multishell_interp```. For AxCaliber-like, xy-plane protocols use ```mfu.rotate_atom_2Dprotocol```.
 
-Visualizing PGSE signals is performed by ```plot_multi_shell_signal``` and ```plot_signal_2Dprotocol```.
+Visualizing PGSE signals is possible with ```plot_multi_shell_signal``` and ```plot_signal_2Dprotocol```.
 
-Another useful utility is ```mfu.loadmat``` used to load Matlab-style mat-files, which works in some cases where ```scipy.ioloadmat``` fails.
+Another useful utility is ```mfu.loadmat``` used to load Matlab-style mat-files, which works in some cases where ```scipy.io.loadmat``` fails.
+
+## References
+Rensonnet, G., Scherrer, B., Girard, G., Jankovski, A., Warfield, S.K., Macq, B., Thiran, J.P. and Taquet, M., 2019. Towards microstructure fingerprinting: Estimation of tissue properties from a dictionary of Monte Carlo diffusion MRI simulations. NeuroImage, 184, pp.964-980. https://doi.org/10.1016/j.neuroimage.2018.09.076
 
