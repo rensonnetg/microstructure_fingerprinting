@@ -1,4 +1,4 @@
-# microstructure_fingerprinting
+# Microstructure fingerprinting
 Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion MRI fingerprints in Python 3.
 
 ## Installing & importing
