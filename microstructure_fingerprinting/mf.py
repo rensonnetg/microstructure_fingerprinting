@@ -54,6 +54,14 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask, frac12=None):
     # crossing angle under which 2 orientations are merged [deg]
     ang_min = 15
 
+    if frac1 is None or frac2 is None:
+        msg = ("If fractions of first and second fascicles set to None,"
+               " argument frac12 is required to specify both fractions"
+               " simultanously. A total of 6 arguments should be passed,"
+               " not 5.")
+        if frac12 is None:
+            raise ValueError(msg)
+
     if isinstance(mask, str):
         mask = nib.load(mask).get_data()
     if isinstance(frac1, str):

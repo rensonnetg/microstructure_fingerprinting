@@ -1856,7 +1856,14 @@ def import_PGSE_scheme(scheme):
       Always a 2D NumPy array with 7 entries per row.
     """
     if isinstance(scheme, str):
-        sch_mat = np.loadtxt(scheme, skiprows=1)
+        # Load from text file
+        with open(scheme, 'r') as f:
+            # Get header
+            first_line = f.readline()
+        rows_to_skip = 0
+        if 'version' in first_line.lower():
+            rows_to_skip = 1
+        sch_mat = np.loadtxt(scheme, skiprows=rows_to_skip)
     elif isinstance(scheme, np.ndarray):
         sch_mat = scheme
     else:
@@ -1948,7 +1955,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
         to specify one common fascicle direction for all substrates.
         Use a 2-D NumPy array with shape (3, num_subs) to specify a different
         fascicle direction for each substrate.
-      plot_distr: list of list where plot_distr[i] specifies the indices in
+      plot_distr: list of lists where plot_distr[i] specifies the indices in
         [0, num_subs-1] of the substrates to plot on the i-th axes.
       substrate_names: list of strings specifiying the name of each substrate.
         len(substrate_names) must equal num_subs. If num_subs=1, it can be a
@@ -1983,7 +1990,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
     Gdir_norm = np.sqrt(np.sum(sch_mat[:, :3]**2, axis=1))
     if np.any(~np.isclose(Gdir_norm[Gdir_norm > 0], 1)):
         raise ValueError('Argument sch_mat: the first three columns should'
-                         'defined unit vectors or optionally zero vectors '
+                         'define unit vectors or optionally zero vectors '
                          'for non diffusion-weighted signals.')
 
     # -- Check fascdir --
@@ -2011,7 +2018,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
                              % (fascdir.shape[1], num_subs))
     # -- Check plot_distr
     if not plot_distr:  # None or empty
-        plot_distr = list()
+        plot_distr = []
         for isub in range(num_subs):
             plot_distr.append([isub])
     num_axes = len(plot_distr)
@@ -2160,7 +2167,7 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
             # show legend if multiple substrates are plotted
             ax[ax_ix, ax_iy].legend(handles,
                                     labels,
-                                    loc='northeast')
+                                    loc='upper right')
             # (matplotlib.axes.Axes.legend)
             lg_on_fig = True
         else:
