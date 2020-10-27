@@ -20,12 +20,39 @@ import os
 import time
 
 
-def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask, frac12=None):
+def cleanup_2fascicles(frac1, frac2, peakmode,
+                       mu1, mu2, mask, frac12=None):
     """Cleans up detected fascicle orientations (or "peaks").
 
     Applies the method described in [1] which selects 0, 1 or 2 of the 2
     detected peaks and updates their orientations based on the detected
-    fascicles' weights and orientations.
+    fascicles' weights and orientations. The goal is to get rid of spurious
+    peaks.
+
+    Parameters
+    ----------
+    frac1: str or NumPy array
+        normalized weight of first fascicle in [0, 1]
+    frac2: str or NumPy array
+        normalized weight of second fascicle in [0, 1]. Note that frac1 and
+        frac2 need not sum to 1 in every voxel.
+    peakmode: str
+        One of 'colat_longit', 'tensor' or 'peaks' (see below).
+    mu1: str or NumPy array
+        Orientation of fascicle 1 in each voxel. Depending on peakmode, the
+        last dimension of the array is assumed to contain
+          'colat_longit': colatitute (from positive z-axis) and longitude
+          (from positive x-axis) angles; mu1.shape[-1] == 2.
+          'peaks': x, y, and z coordinate; mu1.shape[-1] == 3.
+          'tensor': Dxx, Dxy, Dxz, Dyy, Dyz, Dzz elements of the diffusion
+           tensor ('row order'); mu1.shape[-1] == 6.
+    mu2: str or NumPy array
+        orientation of the second fascicle, see mu1.
+    mask: str or NumPy array
+        brain mask indicating where fascicles need cleaning up.
+    frac12: str or NumPy array (optional)
+        Fractions of fascicles 1 and 2 in the same array. If specified, takes
+        precedence over frac1 and frac2.
 
     Returns
     ---------
@@ -94,22 +121,44 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask, frac12=None):
     if frac2.shape != mask.shape:
         raise ValueError("frac2 should have the same shape as mask")
 
-    peakmode = ''
-    if mu1.shape[-1] == 2 and mu2.shape[-1] == 2:
-        peakmode = 'colat_longit'
-    elif mu1.shape[-1] == 6 and mu1.shape[-1] == 6:
-        peakmode = 'tensor'
-        # shape of tensor file data is often nx, ny, nz, 1, 6
+    # Check shape of peak arguments
+    if peakmode == 'colat_longit':
+        lastdimsize = 2
+    elif peakmode == 'peaks':
+        lastdimsize = 3
+    elif peakmode == 'tensor':
+        lastdimsize = 6
+        # shape of tensor file data is often (nx, ny, nz, 1, 6)
         # Get rid of singleton dimension in next-to-last axis
         if mu1.shape[mask.ndim] == 1:
             mu1 = mu1[..., 0, :]
         if mu2.shape[mask.ndim] == 1:
             mu2 = mu2[..., 0, :]
     else:
-        raise ValueError("last dimension of mu1 and mu2 should have "
-                         "sizes 2 (colatitute-longitude) or 6 (positive-"
-                         "definite symmetric tensor). Detected %d and %d."
-                         % (mu1.shape[-1], mu2.shape[-1]))
+        raise ValueError('Unknown peak mode %s' % peakmode)
+
+    # Check shape
+    if mu1.shape[-1] != lastdimsize or mu1.shape[-1] != lastdimsize:
+            msg = ('In \'%s\' peak mode, last dimension of mu1 and mu2 '
+                   'should have size %d. Detected %d and %d.'
+                   % (lastdimsize, mu1.shape[-1], mu2.shape[-1]))
+
+#    peakmode = ''
+#    if mu1.shape[-1] == 2 and mu2.shape[-1] == 2:
+#        peakmode = 'colat_longit'
+#    elif mu1.shape[-1] == 6 and mu1.shape[-1] == 6:
+#        peakmode = 'tensor'
+#        # shape of tensor file data is often nx, ny, nz, 1, 6
+#        # Get rid of singleton dimension in next-to-last axis
+#        if mu1.shape[mask.ndim] == 1:
+#            mu1 = mu1[..., 0, :]
+#        if mu2.shape[mask.ndim] == 1:
+#            mu2 = mu2[..., 0, :]
+#    else:
+#        raise ValueError("last dimension of mu1 and mu2 should have "
+#                         "sizes 2 (colatitute-longitude) or 6 (positive-"
+#                         "definite symmetric tensor). Detected %d and %d."
+#                         % (mu1.shape[-1], mu2.shape[-1]))
 
     ROI_size = np.sum(mask > 0)
     frac1 = frac1[mask > 0]
@@ -139,6 +188,9 @@ def cleanup_2fascicles(frac1, frac2, mu1, mu2, mask, frac12=None):
         peaks[:, 3] = x2
         peaks[:, 4] = y2
         peaks[:, 5] = z2
+    elif peakmode == 'peaks':
+        peaks[:, :3] = mu1
+        peaks[:, 3:6] = mu2
     elif peakmode == 'tensor':
         # Get eigenvectors (eigenvalues in ascending order)
         (d1, eigv1) = np.linalg.eigh(
@@ -396,8 +448,14 @@ class MFModel():
               (self.dic['num_atom'], self.dic['num_ear']))
         # TODO: check consistency of dictionary
 
+    # TODO: remove this function definition and use mf_utils
+    # get_PGSE_scheme_from_bval_bvec
     def _get_sch_mat_from_bval_bvec(self, bvals, bvecs):
         """Generates PGSE scheme matrix from bval and bvec files or arrays.
+
+        The values of Delta, delta and TE must have been provided to the
+        upon instantiation, for instance in a dense, multi-shell PGSE scheme
+        matrix.
 
         Parameters
         ----------
@@ -416,7 +474,7 @@ class MFModel():
         if isinstance(bvecs, str):
             bvecs = np.atleast_2d(np.loadtxt(bvecs))
 
-        # bvals from ms/mm^2 to s/m^2
+        # bvals from s/mm^2 to s/m^2
         bvals = bvals * 1e6
 
         # Check bvecs
@@ -530,16 +588,21 @@ class MFModel():
         bvecs : str or NumPy array
             Should contain unit-norm vectors. Shape can be (Nseq, 3) or
             (3, Nseq) interchangeably.
+
+        (always optional)
+
         csf_mask : str or NumPy array or scalar (optional)
             str must be the path to a NIfTI file containing an array.
             Entries x such that x>0 evaluates to True indicate voxels with a
             cerebrospinal fluid (CSF) compartment.
             scalar assigns its value to all data voxels.
+            If not provided, default is no no CSF compartment estimated.
         ear_mask : str or NumPy array or scalar (optional)
             str must be the path to a NIfTI file containing an array.
             Entries x such that x>0 evaluates to True indicate voxels with a
             extra-axonal restricted (EAR) compartment.
             scalar assigns its value to all data voxels.
+            If not provided, default is no EAR compartment estimated.
 
         verbose : 0 (no display), 1 (important info), 2 (detailed info)
             or 3 (all info) printed to standard output
@@ -879,9 +942,12 @@ class MFModel():
         # (np.sum(mask>0),)
 
         # Parameter order:
-        # initial magnetization M0, nu_fasc, ID_fasc, nu_csf, nu_ear,
-        # ID_ear, MSE, R2 (coeff. determination)
-        num_params = 1 + maxfasc*2 + csf_on + 2*ear_on + 2
+        # initial magnetization M0,
+        # nu_fasc, ID_fasc,
+        # nu_csf,
+        # nu_ear, ID_ear,
+        # MSE, R2 (coeff. determination)
+        num_params = 1 + maxfasc*2 + csf_on*1 + ear_on*2 + 2
 
         # Display interval (for printing progress every x voxels)
         disp_int = int(ROI_size/np.min([ROI_size/MFModel.DFT_DISP_ITVL,

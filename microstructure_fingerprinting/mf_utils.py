@@ -54,10 +54,42 @@ import scipy.optimize
 import scipy.io
 import os.path
 
+_all_solvers = ['solve_exhaustive_posweights',
+                'solve_exhaustive_posweights_1',
+                'solve_exhaustive_posweights_2',
+                'lsqnonneg_2var_opt',
+                'solve_exhaustive_posweights_3',
+                'solve_exhaustive_posweights_4up',
+                'nnls_underdetermined']
+_all_maths = ['get_perp_vector',
+              'rotate_vector',
+              'vrrotvec2mat']
+_all_dwmri = ['DT_col_to_2Darray',
+              'get_gyromagnetic_ratio',
+              'rotate_scheme_mat',
+              'rotate_atom',
+              'rotate_atom_2Dprotocol',
+              'interp_PGSE_from_multishell',
+              'init_PGSE_multishell_interp',
+              'project_PGSE_scheme_xy_plane',
+              'import_PGSE_scheme',
+              'get_PGSE_scheme_from_bval_bvec_dense',
+              'gen_SoS_MRI']
+_all_vis = ['plot_multi_shell_signal',
+            'plot_signal_2Dprotocol']
+_all_mc = ['monte_carlo_average',
+           'get_PGSE_from_phases']
+_all_io = ['loadmat',
+           'from_ipython']
+
+# Determines behavior of 'import *'
+#__all__ = (_all_solvers + _all_maths + _all_dwmri
+#           + _all_vis + _all_mc + _all_io)
 
 #############################################################################
 # SOLVERS
 #############################################################################
+
 
 # Wrapper function to solve combinatorial NNLS calling numba-optimized
 # routines when possible
@@ -734,7 +766,7 @@ def get_perp_vector(v):
     """
 
     v_perp = np.zeros(v.shape)
-    is_zero = v < 10 * 2.2204e-16
+    is_zero = np.abs(v) < (10 * 2.2204e-16)
     num_zeros_v = np.sum(is_zero, axis=0)
     is_nonzero_vect = num_zeros_v == 0
 
@@ -1849,8 +1881,8 @@ def import_PGSE_scheme(scheme):
     """Import PGSE scheme file or matrix
 
     Args:
-      scheme: path to scheme file or NumPy array containing 7 entries per
-        row.
+      scheme: path (str) to scheme file or NumPy array containing 7 entries
+        per row.
 
     Returns:
       Always a 2D NumPy array with 7 entries per row.
@@ -1879,6 +1911,90 @@ def import_PGSE_scheme(scheme):
     if num_bad_norms > 0:
         raise ValueError("Detected %d non-zero gradients which did not have"
                          " unit norm. Please normalize." % num_bad_norms)
+    return sch_mat
+
+
+def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
+    """Generates PGSE scheme matrix from bval and bvec files or arrays.
+
+    The values of Delta, delta and TE must have been provided to the
+    upon instantiation, for instance in a dense, multi-shell PGSE scheme
+    matrix.
+
+    Parameters
+    ----------
+    sch_mat_dense: str or NumPy array
+      str must be the path to scheme file
+      2D NumPy array must have shape (Nsampling, 7) corresponding to
+      a (usually denser) sampling of the gradients
+    bvals: str or NumPy array
+      b-values in ms/mm^2 (typically around 1000 for DW-MRI)
+    bvecs: str or NumPy array
+      unit-norm 3D vectors (will be transposed automatically)
+
+    Returns
+    ---------
+    sch_mat: 2-D NumPy array with shape (n_seq, 7)
+    """
+    sch_mat_ref = import_PGSE_scheme(sch_mat_dense)
+
+    if isinstance(bvals, str):
+        bvals = np.loadtxt(bvals)
+    if isinstance(bvecs, str):
+        bvecs = np.atleast_2d(np.loadtxt(bvecs))
+
+    # bvals from s/mm^2 to s/m^2
+    bvals = bvals * 1e6
+
+    # Check bvecs
+    if np.ndim(bvecs) != 2:
+        raise ValueError("bvecs array should have 2 dimensions,"
+                         " detected %d." % bvecs.ndim)
+    if bvecs.shape[0] != bvals.size and bvecs.shape[1] != bvals.size:
+        raise ValueError("Number of b-vectors does not match number"
+                         " of b-values (%d)" % bvals.size)
+
+    # Preallocate sheme matrix and transpose bvecs if needed
+    sch_mat = np.zeros((bvals.size, 7))
+    if bvecs.shape[0] == 3:
+        sch_mat[:, :3] = bvecs.transpose()
+    elif bvecs.shape[1] == 3:
+        sch_mat[:, :3] = bvecs
+    else:
+        raise ValueError("Vectors in bvecs should be 3-dimensional."
+                         " However, detected no dimension with size 3.")
+
+    # Normalize gradient directions
+    gnorm = np.sqrt(np.sum(sch_mat[:, :3]**2, axis=1))
+    sch_mat[gnorm > 0, :3] = (sch_mat[gnorm > 0, :3] /
+                              gnorm[gnorm > 0][:, np.newaxis])
+
+    # Get gradient intensity from bval assuming unique Delta/deta
+    gam = get_gyromagnetic_ratio('H')
+    Del_prot = sch_mat_ref[0, 4]
+    del_prot = sch_mat_ref[0, 5]
+    TE_prot = sch_mat_ref[0, 6]
+    G = np.sqrt(bvals/(Del_prot - del_prot/3))/(gam*del_prot)
+    Geff = np.zeros(bvals.shape[0])
+
+    # Map each bval to reference G within a given tolerance
+    G_target = np.unique(sch_mat_ref[:, 3])
+    Gtol = 1e-3
+    G_un_eff = np.zeros(G_target.size)
+
+    grads_per_shell = np.zeros(G_target.size)  # for sanity check
+    for ig in range(G_target.size):
+        i_shell = np.where(np.abs(G_target[ig] - G) < Gtol)[0]
+        grads_per_shell[ig] = i_shell.size
+        G_un_eff[ig] = G_target[ig]  # np.mean(G[i_shell])
+        Geff[i_shell] = G_target[ig]
+    chk = G.size == np.sum(grads_per_shell)
+    assert chk, ("%d distinct b-values vs expected %d" %
+                 (np.sum(grads_per_shell), G.size))
+    sch_mat[:, 3] = Geff
+
+    # Copy and paste unique reference timing parameters
+    sch_mat[:, 4:7] = np.array([Del_prot, del_prot, TE_prot])
     return sch_mat
 
 
@@ -2044,6 +2160,11 @@ def plot_multi_shell_signal(sig, sch_mat, fascdir,
                              'strings and can only be a simple string if '
                              'num_subs=1, but detected num_subs=%d'
                              % num_subs)
+    if len(substrate_names) != num_subs:
+        raise ValueError('Number of labels in substrate_names (%d) does'
+                         ' not match number of substrates to be '
+                         'plotted (%d).' %
+                         (len(substrate_names), num_subs))
     diff_time = sch_mat[:, 4]-sch_mat[:, 5]/3
     bvals = (gam*sch_mat[:, 3]*sch_mat[:, 5])**2 * diff_time
     # bvals_un = np.unique(bvals)  # DEPRECATED
