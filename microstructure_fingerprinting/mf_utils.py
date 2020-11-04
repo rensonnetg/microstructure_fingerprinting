@@ -65,6 +65,7 @@ _all_maths = ['get_perp_vector',
               'rotate_vector',
               'vrrotvec2mat']
 _all_dwmri = ['DT_col_to_2Darray',
+              'peaks_to_DT_col',
               'get_gyromagnetic_ratio',
               'rotate_scheme_mat',
               'rotate_atom',
@@ -746,6 +747,7 @@ def nnls_underdetermined(X, y):
 #############################################################################
 
 
+# TODO: allow user to change axis along which perpendicularity enforced
 def get_perp_vector(v):
     """Returns vector(s) having a zero dot product with the vector(s) in v.
 
@@ -843,6 +845,7 @@ def vrrotvec2mat(rotax, theta):
 #############################################################################
 
 
+# TODO: rename it to DT_vec rather than column
 def DT_col_to_2Darray(DT_col, order='row'):
     """Reformats 1-D input vector (3D) into 3x3 symmetric NumPy array.
 
@@ -853,7 +856,7 @@ def DT_col_to_2Darray(DT_col, order='row'):
         [xx xy xz yy yz zz], 'column' assumes [xx xy yy xz yz zz] and
         'diagonal' assumes [xx yy zz xy yz xz]
 
-    Return:
+    Returns:
       (..., 3, 3) NumPy array.
     """
     if DT_col.shape[-1] != 6:
@@ -885,6 +888,89 @@ def DT_col_to_2Darray(DT_col, order='row'):
               DT_col[..., 5], DT_col[..., 4], DT_col[..., 2])
     else:
         raise ValueError("Unknown order option \"%s\"." % order)
+    return out
+
+
+def peaks_to_DT_col(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
+    """ Convert peaks to stick-like diffusion tensors arranged in a vector.
+
+    This function should mainly be used to visualize peaks with software which
+    cannot display peaks and requires diffusion tensors formatted as 6-element
+    vectors such as Benoit Scherrer's MisterI. The diffusivities are assigned
+    arbitrarily.
+
+    Args:
+      peaks: NumPy array with last 2 dimensions being (n_peaks, 3)
+      lam_par: parallel or axial diffusivity. Useful to set desired units.
+        Default is 2e-3, which is close to the in vivo diffusivity in the
+        white matter expressed in mm^2/s.
+      lam_perp: perpendicular, radial or transverse diffusivity. Must be lower
+        than or equal to lam_par and set in the same units. A small value
+        (e.g., 1/10 or 1/20 of lam_perp) is recommended for ulterior
+        visualization. Default is 0.1e-3.
+      order: sets order or elements along last axis of each output array:
+        'row' (default) returns values in the order [xx xy xz yy yz zz]
+        'column' returns as [xx xy yy xz yz zz]
+        'diagonal' returns as [xx yy zz xy yz xz]
+
+    Returns:
+      out: Python list with length n_peaks. For i=0,...,n_peaks-1,
+        out[i] is an array with the same shape as peaks except for
+        the last 2 dimensions, which are (1, 6) and contain the elements
+        of a symmetric diffusion tensor in the order specified by the order
+        argument.
+    """
+    if peaks.ndim < 2:
+        raise ValueError('peaks array should have at least 2 dimensions. '
+                         'Detected %d.' % peaks.ndim)
+    if peaks.shape[-1] != 3:
+        raise ValueError('Last dimension of peaks should have size 3,'
+                         ' detected %d.' % (peaks.shape[-1]))
+    if lam_par < lam_perp:
+        raise ValueError('Parallel diffusivity should be greater than or'
+                         ' equal to perpendicular diffusivity.')
+    # peaks has shape (brain_size, n_peaks, 3)
+    n_peaks = peaks.shape[-2]
+    peak_norm = np.sqrt(np.sum(peaks**2, axis=peaks.ndim-1))
+    nnz = peak_norm > 0  # shape (brain_size, n_peaks)
+
+    # Normalize non-zero vectors (avoid division by zero)
+    peaks[nnz, :] = peaks[nnz, :]/peak_norm[nnz][:, np.newaxis]
+
+    # Randomly draw direction perpendicular to main peak direction,
+    # arrays have shape (brain_size, n_peaks, 3) like peaks
+    perp_dir_1 = get_perp_vector(np.swapaxes(peaks, 0, peaks.ndim-1))
+    perp_dir_1 = np.swapaxes(perp_dir_1, 0, peaks.ndim-1)
+    # Complete orthonormal basis formed by eigenvectors of the DT
+    perp_dir_2 = np.cross(peaks, perp_dir_1, axis=peaks.ndim-1)
+
+    # Set order in which diffusion tensor elements must be returned
+    if order == 'row':  # [xx xy xz yy yz zz] or [00, 01, 02, 11, 12, 22]
+        ix = [0, 0, 0, 1, 1, 2]  # x, x, x, y, y, z
+        iy = [0, 1, 2, 1, 2, 2]  # x, y, z, y, z, z
+    elif order == 'column':  # [xx xy yy xz yz zz]
+        ix = [0, 0, 1, 0, 1, 2]  # x, x, y, x, y, z
+        iy = [0, 1, 1, 2, 2, 2]  # x, y, y, z, z, z
+    elif order == 'diagonal':  # [xx yy zz xy yz xz]
+        ix = [0, 1, 2, 0, 1, 0]  # x, y, z, x, y, x
+        iy = [0, 1, 2, 1, 2, 2]  # x, y, z, y, z, z
+    else:
+        raise ValueError('Unknown order %s.' % order)
+
+    out = []
+    for k in range(n_peaks):
+        # Any diagonalizable matrix M can be rewritten
+        # M = V D V' = lam1 v1v1' + lam2 v2v2' + lam3 v3v3' where ' is the
+        # transpose where D = diag(lam1, lam2, lam3) and V = [v1, v2, v3]
+        main = peaks[..., k, :]  # main eigenvector
+        p1 = perp_dir_1[..., k, :]  # 1st perpendicular eigenvector
+        p2 = perp_dir_2[..., k, :]  # 2nd perpendicular eigenvector
+        # Build diffusion tensor DT with shape (brain_size, 3, 3)
+        DT = (lam_par * main[..., :, np.newaxis] * main[..., np.newaxis, :]
+              + lam_perp * p1[..., :, np.newaxis] * p1[..., np.newaxis, :]
+              + lam_perp * p2[..., :, np.newaxis] * p2[..., np.newaxis, :])
+        # Output should have shape (brain_size,  6)
+        out.append(DT[..., ix, iy])
     return out
 
 
@@ -1883,6 +1969,11 @@ def import_PGSE_scheme(scheme):
     Args:
       scheme: path (str) to scheme file or NumPy array containing 7 entries
         per row.
+        Each row is of the form [gx, gy, gz, G, Del, del, TE] where
+        [gx, gy, gz]^T is a the gradient direction with unit Euclidean norm,
+        G is the gradient intensity, Del the time between the onsets of the
+        two gradient pulses and del the duration of each gradient pulse. The
+        values must satisfy Del>=del and TE>=(Del+del).
 
     Returns:
       Always a 2D NumPy array with 7 entries per row.
@@ -1911,6 +2002,30 @@ def import_PGSE_scheme(scheme):
     if num_bad_norms > 0:
         raise ValueError("Detected %d non-zero gradients which did not have"
                          " unit norm. Please normalize." % num_bad_norms)
+    G = sch_mat[:, 3]
+    Delta = sch_mat[:, 4]
+    delta = sch_mat[:, 5]
+    TE = sch_mat[:, 6]
+    if np.any(G < 0):
+        raise ValueError('Detected %d sequence(s) with negative gradient '
+                         'intensity (4th column).' % np.sum(G < 0))
+    if np.any(Delta < 0):
+        raise ValueError('Detected %d sequence(s) with negative gradient '
+                         'separation Delta (5th column).' % np.sum(Delta < 0))
+    if np.any(delta < 0):
+        raise ValueError('Detected %d sequence(s) with negative gradient '
+                         'duration delta (6th column).' % np.sum(delta < 0))
+    if np.any(TE < 0):
+        raise ValueError('Detected %d sequence(s) with negative echo time '
+                         'TE (7th column).' % np.sum(TE < 0))
+    if np.any(delta > Delta):
+        raise ValueError('Detected %d sequence(s) in which delta (6th column)'
+                         ' was greater than Delta (5th column).' %
+                         np.sum(delta > Delta))
+    if np.any(TE < (Delta+delta)):
+        raise ValueError('Detected %d sequence(s) in which TE (7th column)'
+                         ' was lower than Delta+delta.' %
+                         np.sum(TE < (Delta+delta)))
     return sch_mat
 
 
