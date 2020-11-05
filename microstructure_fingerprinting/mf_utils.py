@@ -64,7 +64,8 @@ _all_solvers = ['solve_exhaustive_posweights',
 _all_maths = ['get_perp_vector',
               'rotate_vector',
               'vrrotvec2mat']
-_all_dwmri = ['DT_col_to_2Darray',
+_all_dwmri = ['DT_array_to_vec',
+              'DT_vec_to_2Darray',
               'peaks_to_DT_col',
               'get_gyromagnetic_ratio',
               'rotate_scheme_mat',
@@ -844,55 +845,91 @@ def vrrotvec2mat(rotax, theta):
 # DW-MRI
 #############################################################################
 
-
-# TODO: rename it to DT_vec rather than column
-def DT_col_to_2Darray(DT_col, order='row'):
-    """Reformats 1-D input vector (3D) into 3x3 symmetric NumPy array.
+def DT_array_to_vec(DT, order='row'):
+    """Reformats 3x3 symmetric NumPy array to 6-element vector.
 
     Args:
-      DT_col: (..., 6) NumPy array, where last dimension holds the data
+      DT: (..., 3, 3) array where last two dimensions hold a symmetric 3-by-3
+        matrix.
+      order: one of 'row', 'column', 'diagonal'
+        'row' (default) returns values in the order [xx xy xz yy yz zz]
+        'column': returns values in the order [xx xy yy xz yz zz]
+        'diagonal': returns values in the order [xx yy zz xy yz xz]
+
+    Returns:
+      NumPy array of shape (..., 6) where last dimension hold the data in
+      the order set by the order parameter.
+    """
+    if DT.ndim < 2:
+        raise ValueError('DT should have at least 2 dimensions. Detected'
+                         ' %d.' % DT.ndim)
+    if DT.shape[-2:] != (3, 3):
+        raise ValueError('Last 2 dimensions of DT should be (3, 3). Detected'
+                         ' (%d, %d).' % DT.shape[-2:])
+    # Set order in which diffusion tensor elements must be returned
+    if order == 'row':  # [xx xy xz yy yz zz] or [00, 01, 02, 11, 12, 22]
+        ix = [0, 0, 0, 1, 1, 2]  # x, x, x, y, y, z
+        iy = [0, 1, 2, 1, 2, 2]  # x, y, z, y, z, z
+    elif order == 'column':  # [xx xy yy xz yz zz]
+        ix = [0, 0, 1, 0, 1, 2]  # x, x, y, x, y, z
+        iy = [0, 1, 1, 2, 2, 2]  # x, y, y, z, z, z
+    elif order == 'diagonal':  # [xx yy zz xy yz xz]
+        ix = [0, 1, 2, 0, 1, 0]  # x, y, z, x, y, x
+        iy = [0, 1, 2, 1, 2, 2]  # x, y, z, y, z, z
+    else:
+        raise ValueError('Unknown order \"%s\".' % order)
+    return DT[..., ix, iy]
+
+
+def DT_vec_to_2Darray(DT_vec, order='row'):
+    """Reformats 6-element vectors into 3x3 symmetric NumPy array.
+
+    Args:
+      DT_vec: (..., 6) NumPy array, where last dimension holds the data
         defining a real-valued symmetric diffusion tensor.
-      order: 'row' (default) assumes values are provided in the order
-        [xx xy xz yy yz zz], 'column' assumes [xx xy yy xz yz zz] and
+      order:
+        'row' (default) assumes values are provided in the order
+          [xx xy xz yy yz zz]
+        'column' assumes [xx xy yy xz yz zz]
         'diagonal' assumes [xx yy zz xy yz xz]
 
     Returns:
       (..., 3, 3) NumPy array.
     """
-    if DT_col.shape[-1] != 6:
+    if DT_vec.shape[-1] != 6:
         raise ValueError("Last dimension of input should have size 6,"
-                         " detected %d." % DT_col.shape[-1])
+                         " detected %d." % DT_vec.shape[-1])
 
-    out = np.zeros(DT_col.shape[:-1] + (3, 3))
+    out = np.zeros(DT_vec.shape[:-1] + (3, 3))
 
     if order == 'row':
         (out[..., 0, 0], out[..., 0, 1], out[..., 0, 2],
          out[..., 1, 0], out[..., 1, 1], out[..., 1, 2],
          out[..., 2, 0], out[..., 2, 1], out[..., 2, 2]
-         ) = (DT_col[..., 0], DT_col[..., 1], DT_col[..., 2],
-              DT_col[..., 1], DT_col[..., 3], DT_col[..., 4],
-              DT_col[..., 2], DT_col[..., 4], DT_col[..., 5])
+         ) = (DT_vec[..., 0], DT_vec[..., 1], DT_vec[..., 2],
+              DT_vec[..., 1], DT_vec[..., 3], DT_vec[..., 4],
+              DT_vec[..., 2], DT_vec[..., 4], DT_vec[..., 5])
     elif order == 'column':
         (out[..., 0, 0], out[..., 0, 1], out[..., 0, 2],
          out[..., 1, 0], out[..., 1, 1], out[..., 1, 2],
          out[..., 2, 0], out[..., 2, 1], out[..., 2, 2]
-         ) = (DT_col[..., 0], DT_col[..., 1], DT_col[..., 3],
-              DT_col[..., 1], DT_col[..., 2], DT_col[..., 4],
-              DT_col[..., 3], DT_col[..., 4], DT_col[..., 5])
+         ) = (DT_vec[..., 0], DT_vec[..., 1], DT_vec[..., 3],
+              DT_vec[..., 1], DT_vec[..., 2], DT_vec[..., 4],
+              DT_vec[..., 3], DT_vec[..., 4], DT_vec[..., 5])
     elif order == 'diagonal':
         (out[..., 0, 0], out[..., 0, 1], out[..., 0, 2],
          out[..., 1, 0], out[..., 1, 1], out[..., 1, 2],
          out[..., 2, 0], out[..., 2, 1], out[..., 2, 2]
-         ) = (DT_col[..., 0], DT_col[..., 3], DT_col[..., 5],
-              DT_col[..., 3], DT_col[..., 1], DT_col[..., 4],
-              DT_col[..., 5], DT_col[..., 4], DT_col[..., 2])
+         ) = (DT_vec[..., 0], DT_vec[..., 3], DT_vec[..., 5],
+              DT_vec[..., 3], DT_vec[..., 1], DT_vec[..., 4],
+              DT_vec[..., 5], DT_vec[..., 4], DT_vec[..., 2])
     else:
         raise ValueError("Unknown order option \"%s\"." % order)
     return out
 
 
-def peaks_to_DT_col(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
-    """ Convert peaks to stick-like diffusion tensors arranged in a vector.
+def peaks_to_DT_vec(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
+    """ Converts peaks to stick-like diffusion tensors arranged in a vector.
 
     This function should mainly be used to visualize peaks with software which
     cannot display peaks and requires diffusion tensors formatted as 6-element
@@ -908,15 +945,15 @@ def peaks_to_DT_col(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
         than or equal to lam_par and set in the same units. A small value
         (e.g., 1/10 or 1/20 of lam_perp) is recommended for ulterior
         visualization. Default is 0.1e-3.
-      order: sets order or elements along last axis of each output array:
+      order: sets order of elements along last axis of each output array:
         'row' (default) returns values in the order [xx xy xz yy yz zz]
         'column' returns as [xx xy yy xz yz zz]
         'diagonal' returns as [xx yy zz xy yz xz]
 
     Returns:
-      out: Python list with length n_peaks. For i=0,...,n_peaks-1,
+      out: Python list of length n_peaks. For i=0,...,n_peaks-1,
         out[i] is an array with the same shape as peaks except for
-        the last 2 dimensions, which are (1, 6) and contain the elements
+        the last dimension which has size 6 and contain the elements
         of a symmetric diffusion tensor in the order specified by the order
         argument.
     """
@@ -955,21 +992,22 @@ def peaks_to_DT_col(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
         ix = [0, 1, 2, 0, 1, 0]  # x, y, z, x, y, x
         iy = [0, 1, 2, 1, 2, 2]  # x, y, z, y, z, z
     else:
-        raise ValueError('Unknown order %s.' % order)
+        raise ValueError('Unknown order \"%s\".' % order)
 
+    # Any diagonalizable matrix M can be rewritten
+    # M = VDV' = lam1 v1v1' + lam2 v2v2' + lam3 v3v3' where ' denotes
+    # transposition, D = diag(lam1, lam2, lam3) and V = [v1, v2, v3], where
+    # M.vi = lami for i=1, 2, 3.
     out = []
     for k in range(n_peaks):
-        # Any diagonalizable matrix M can be rewritten
-        # M = V D V' = lam1 v1v1' + lam2 v2v2' + lam3 v3v3' where ' is the
-        # transpose where D = diag(lam1, lam2, lam3) and V = [v1, v2, v3]
         main = peaks[..., k, :]  # main eigenvector
         p1 = perp_dir_1[..., k, :]  # 1st perpendicular eigenvector
         p2 = perp_dir_2[..., k, :]  # 2nd perpendicular eigenvector
-        # Build diffusion tensor DT with shape (brain_size, 3, 3)
+        # Build diffusion tensors in big array with shape (brain_size, 3, 3)
         DT = (lam_par * main[..., :, np.newaxis] * main[..., np.newaxis, :]
               + lam_perp * p1[..., :, np.newaxis] * p1[..., np.newaxis, :]
               + lam_perp * p2[..., :, np.newaxis] * p2[..., np.newaxis, :])
-        # Output should have shape (brain_size,  6)
+        # k-th outputshould have shape (brain_size,  6)
         out.append(DT[..., ix, iy])
     return out
 

@@ -194,10 +194,10 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     elif peakmode == 'tensor':
         # Get eigenvectors (eigenvalues in ascending order)
         (d1, eigv1) = np.linalg.eigh(
-            mfu.DT_col_to_2Darray(mu1)
+            mfu.DT_vec_to_2Darray(mu1)
             )
         (d2, eigv2) = np.linalg.eigh(
-            mfu.DT_col_to_2Darray(mu2)
+            mfu.DT_vec_to_2Darray(mu2)
             )
         # Keep main eigenvector in each voxel. Keep zero vectors
         # for zero matrices (eigh returns matrix of unit
@@ -799,7 +799,7 @@ class MFModel():
                         peak_arg_i = peak_arg_i[idx]
                     # Get eigenvectors (eigenvalues in ascending order)
                     (d, eigv) = np.linalg.eigh(
-                        mfu.DT_col_to_2Darray(peak_arg_i[mask_arr > 0, :])
+                        mfu.DT_vec_to_2Darray(peak_arg_i[mask_arr > 0, :])
                         )  # shape of tensor file data is nx, ny, nz, 1, 6
                     # Keep main eigenvector in each voxel. Keep zero vectors
                     # for zero matrices (eigh returns matrix of unit
