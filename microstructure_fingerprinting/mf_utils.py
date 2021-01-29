@@ -66,7 +66,7 @@ _all_maths = ['get_perp_vector',
               'vrrotvec2mat']
 _all_dwmri = ['DT_array_to_vec',
               'DT_vec_to_2Darray',
-              'peaks_to_DT_col',
+              'peaks_to_DT_vec',
               'get_gyromagnetic_ratio',
               'rotate_scheme_mat',
               'rotate_atom',
