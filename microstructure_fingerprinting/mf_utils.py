@@ -66,7 +66,7 @@ _all_maths = ['get_perp_vector',
               'vrrotvec2mat']
 _all_dwmri = ['DT_array_to_vec',
               'DT_vec_to_2Darray',
-              'peaks_to_DT_col',
+              'peaks_to_DT_vec',
               'get_gyromagnetic_ratio',
               'rotate_scheme_mat',
               'rotate_atom',
@@ -881,20 +881,32 @@ def DT_array_to_vec(DT, order='row'):
     return DT[..., ix, iy]
 
 
-def DT_vec_to_2Darray(DT_vec, order='row'):
+def DT_vec_to_2Darray(DT_vec, order):
     """Reformats 6-element vectors into 3x3 symmetric NumPy array.
 
     Args:
       DT_vec: (..., 6) NumPy array, where last dimension holds the data
         defining a real-valued symmetric diffusion tensor.
       order:
-        'row' (default) assumes values are provided in the order
+        'row' assumes values are provided in the order
           [xx xy xz yy yz zz]
         'column' assumes [xx xy yy xz yz zz]
         'diagonal' assumes [xx yy zz xy yz xz]
 
+        Note that the ordering adopted here refers to the upper part of the
+        symmetric matrix (m_ij with j>=i). In that sense, 'row' ordering
+        is default for .nrrd/.nhdr files [1] and 'column' ordering is the
+        convention for NIfTI files [2]. Even though the official NIfTI-1
+        documentation mentions 'row' ordering, it actually refers to the
+        lower half of the symmetric matrix, which is equivalent to
+        our 'column' ordering of the upper half.
+
     Returns:
       (..., 3, 3) NumPy array.
+
+    References:
+      [1] https://www.na-mic.org/wiki/NAMIC_Wiki:DTI:Tensor_format#Using_NRRD_for_DWI_and_DTI_File_I.2FO_.28from_Gordon_Kindlmann.29
+      [2] https://nifti.nimh.nih.gov/nifti-1/documentation/nifti1diagrams_v2.pdf
     """
     if DT_vec.shape[-1] != 6:
         raise ValueError("Last dimension of input should have size 6,"
@@ -928,13 +940,12 @@ def DT_vec_to_2Darray(DT_vec, order='row'):
     return out
 
 
-def peaks_to_DT_vec(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
+def peaks_to_DT_vec(peaks, order, lam_par=2e-3, lam_perp=0.1e-3):
     """ Converts peaks to stick-like diffusion tensors arranged in a vector.
 
     This function should mainly be used to visualize peaks with software which
     cannot display peaks and requires diffusion tensors formatted as 6-element
-    vectors such as Benoit Scherrer's MisterI. The diffusivities are assigned
-    arbitrarily.
+    vectors such as Benoit Scherrer's MisterI.
 
     Args:
       peaks: NumPy array with last 2 dimensions being (n_peaks, 3)
@@ -946,16 +957,28 @@ def peaks_to_DT_vec(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
         (e.g., 1/10 or 1/20 of lam_perp) is recommended for ulterior
         visualization. Default is 0.1e-3.
       order: sets order of elements along last axis of each output array:
-        'row' (default) returns values in the order [xx xy xz yy yz zz]
+        'row' returns values in the order [xx xy xz yy yz zz]
         'column' returns as [xx xy yy xz yz zz]
         'diagonal' returns as [xx yy zz xy yz xz]
+
+        Note that the ordering adopted here refers to the upper part of the
+        symmetric matrix (m_ij with j>=i). In that sense, 'row' ordering
+        is default for .nrrd/.nhdr files [1] and 'column' ordering is the
+        convention for NIfTI files [2]. Even though the official NIfTI-1
+        documentation mentions 'row' ordering, it actually refers to the
+        lower half of the symmetric matrix, which is equivalent to
+        our 'column' ordering of the upper half.
 
     Returns:
       out: Python list of length n_peaks. For i=0,...,n_peaks-1,
         out[i] is an array with the same shape as peaks except for
-        the last dimension which has size 6 and contain the elements
+        the last dimension which has size 6 and contains the elements
         of a symmetric diffusion tensor in the order specified by the order
         argument.
+
+    References:
+      [1] https://www.na-mic.org/wiki/NAMIC_Wiki:DTI:Tensor_format#Using_NRRD_for_DWI_and_DTI_File_I.2FO_.28from_Gordon_Kindlmann.29
+      [2] https://nifti.nimh.nih.gov/nifti-1/documentation/nifti1diagrams_v2.pdf
     """
     if peaks.ndim < 2:
         raise ValueError('peaks array should have at least 2 dimensions. '
@@ -969,19 +992,27 @@ def peaks_to_DT_vec(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
     # peaks has shape (brain_size, n_peaks, 3)
     n_peaks = peaks.shape[-2]
     peak_norm = np.sqrt(np.sum(peaks**2, axis=peaks.ndim-1))
-    nnz = peak_norm > 0  # shape (brain_size, n_peaks)
+    nnz = peak_norm > 0  # shape (brain_size, n_peaks) with n_nnz nnz elements
 
     # Normalize non-zero vectors (avoid division by zero)
     peaks[nnz, :] = peaks[nnz, :]/peak_norm[nnz][:, np.newaxis]
 
-    # Randomly draw direction perpendicular to main peak direction,
-    # arrays have shape (brain_size, n_peaks, 3) like peaks
-    perp_dir_1 = get_perp_vector(np.swapaxes(peaks, 0, peaks.ndim-1))
-    perp_dir_1 = np.swapaxes(perp_dir_1, 0, peaks.ndim-1)
-    # Complete orthonormal basis formed by eigenvectors of the DT
-    perp_dir_2 = np.cross(peaks, perp_dir_1, axis=peaks.ndim-1)
+    # Only non-zero peaks
+    # Randomly draw direction perpendicular to main peak direction
+    # pdir_1 and 2 have shape (n_nnz, 3)
+    pdir_1 = get_perp_vector(np.swapaxes(peaks[nnz, :], 0, 1))
+    pdir_1 = np.swapaxes(pdir_1, 0, 1)
+    pdir_2 = np.cross(peaks[nnz, :], pdir_1, axis=1)
 
-    # Set order in which diffusion tensor elements must be returned
+#    # Randomly draw direction perpendicular to main peak direction,
+#    # arrays have shape (brain_size, n_peaks, 3) like peaks
+#    pdir_1 = get_perp_vector(np.swapaxes(peaks, 0, peaks.ndim-1))
+#    pdir_1 = np.swapaxes(pdir_1, 0, peaks.ndim-1)
+#    # Complete orthonormal basis formed by eigenvectors of the DT
+#    pdir_2 = np.cross(peaks, pdir_1, axis=peaks.ndim-1)
+
+    # Set order in which diffusion tensor elements must be returned (this
+    # describes the upper triangular part of the matrix)
     if order == 'row':  # [xx xy xz yy yz zz] or [00, 01, 02, 11, 12, 22]
         ix = [0, 0, 0, 1, 1, 2]  # x, x, x, y, y, z
         iy = [0, 1, 2, 1, 2, 2]  # x, y, z, y, z, z
@@ -997,18 +1028,31 @@ def peaks_to_DT_vec(peaks, lam_par=2e-3, lam_perp=0.1e-3, order='row'):
     # Any diagonalizable matrix M can be rewritten
     # M = VDV' = lam1 v1v1' + lam2 v2v2' + lam3 v3v3' where ' denotes
     # transposition, D = diag(lam1, lam2, lam3) and V = [v1, v2, v3], where
-    # M.vi = lami for i=1, 2, 3.
+    # M.vi = lami*vi for i=1, 2, 3.
+
     out = []
+    # NEW: just non zero peaks, DT has shape (n_nnz, 3, 3)
+    DT = (lam_par * peaks[nnz, :][..., np.newaxis]
+                  * peaks[nnz, :][:, np.newaxis, :]
+          + lam_perp * pdir_1[..., np.newaxis] * pdir_1[:, np.newaxis, :]
+          + lam_perp * pdir_2[..., np.newaxis] * pdir_2[:, np.newaxis, :])
+    tens = np.zeros(peaks.shape[:-1]+(6,))  # shape (brain_size, n_peaks, 6)
+    tens[nnz, :] = DT[:, ix, iy]  # shape (n_nnz, 6)
     for k in range(n_peaks):
-        main = peaks[..., k, :]  # main eigenvector
-        p1 = perp_dir_1[..., k, :]  # 1st perpendicular eigenvector
-        p2 = perp_dir_2[..., k, :]  # 2nd perpendicular eigenvector
-        # Build diffusion tensors in big array with shape (brain_size, 3, 3)
-        DT = (lam_par * main[..., :, np.newaxis] * main[..., np.newaxis, :]
-              + lam_perp * p1[..., :, np.newaxis] * p1[..., np.newaxis, :]
-              + lam_perp * p2[..., :, np.newaxis] * p2[..., np.newaxis, :])
-        # k-th outputshould have shape (brain_size,  6)
-        out.append(DT[..., ix, iy])
+        out.append(tens[..., k, :])
+    # END NEW
+
+    # OLD
+#    for k in range(n_peaks):
+#        main = peaks[..., k, :]  # main eigenvector
+#        p1 = pdir_1[..., k, :]  # 1st perpendicular eigenvector
+#        p2 = pdir_2[..., k, :]  # 2nd perpendicular eigenvector
+#        # Build diffusion tensors in big array with shape (brain_size, 3, 3)
+#        DT = (lam_par * main[..., :, np.newaxis] * main[..., np.newaxis, :]
+#              + lam_perp * p1[..., :, np.newaxis] * p1[..., np.newaxis, :]
+#              + lam_perp * p2[..., :, np.newaxis] * p2[..., np.newaxis, :])
+#        # k-th outputshould have shape (brain_size,  6)
+#        out.append(DT[..., ix, iy])
     return out
 
 
@@ -2067,12 +2111,14 @@ def import_PGSE_scheme(scheme):
     return sch_mat
 
 
-def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
+# TODO: generalize to multiple Delta/delta in reference scheme mat by adding
+# argument Delta, delta (which must be assumed unique for all bvals)
+def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs,
+                                         Gtol=1e-3):
     """Generates PGSE scheme matrix from bval and bvec files or arrays.
 
-    The values of Delta, delta and TE must have been provided to the
-    upon instantiation, for instance in a dense, multi-shell PGSE scheme
-    matrix.
+    The values of Delta, delta and TE are provided in the dense, multi-shell
+    PGSE scheme matrix.
 
     Parameters
     ----------
@@ -2081,15 +2127,21 @@ def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
       2D NumPy array must have shape (Nsampling, 7) corresponding to
       a (usually denser) sampling of the gradients
     bvals: str or NumPy array
-      b-values in ms/mm^2 (typically around 1000 for DW-MRI)
+      b-values in s/mm^2 (typically around 1000 for DW-MRI). Each value
+      must match a b-value in sch_mat_dense, within a given tolerance Gtol
     bvecs: str or NumPy array
       unit-norm 3D vectors (will be transposed automatically)
+    Gtol: float
+      tolerance on the gradient intensity to consider that the gradients
+      defined by bvals and bvecs match those in sch_mat_dense. Expressed in
+      T/m.
 
     Returns
     ---------
-    sch_mat: 2-D NumPy array with shape (n_seq, 7)
+    sch_mat: 2-D NumPy array with shape (n_seq, 7), each row being
+      [gx, gy, gz, G, Delta, delta, TE] in SI units.
     """
-    sch_mat_ref = import_PGSE_scheme(sch_mat_dense)
+    sch_mat_ref = import_PGSE_scheme(sch_mat_dense)  # always 2D
 
     if isinstance(bvals, str):
         bvals = np.loadtxt(bvals)
@@ -2106,6 +2158,14 @@ def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
     if bvecs.shape[0] != bvals.size and bvecs.shape[1] != bvals.size:
         raise ValueError("Number of b-vectors does not match number"
                          " of b-values (%d)" % bvals.size)
+    # Check reference scheme matrix for identical Delta/delta values
+    is_eq_to_first = np.all(sch_mat_dense[0, 4:6] ==
+                            sch_mat_dense[:, 4:6], axis=1)
+    if not np.all(is_eq_to_first):
+        raise ValueError('Detected different pairs of (Delta, delta) values'
+                         ' in reference scheme matrix (note that zeros '
+                         'count as values),'
+                         ' which is currently not supported.')
 
     # Preallocate sheme matrix and transpose bvecs if needed
     sch_mat = np.zeros((bvals.size, 7))
@@ -2122,7 +2182,7 @@ def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
     sch_mat[gnorm > 0, :3] = (sch_mat[gnorm > 0, :3] /
                               gnorm[gnorm > 0][:, np.newaxis])
 
-    # Get gradient intensity from bval assuming unique Delta/deta
+    # Get gradient intensity from bvals, assuming unique Delta/deta for now
     gam = get_gyromagnetic_ratio('H')
     Del_prot = sch_mat_ref[0, 4]
     del_prot = sch_mat_ref[0, 5]
@@ -2132,7 +2192,6 @@ def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
 
     # Map each bval to reference G within a given tolerance
     G_target = np.unique(sch_mat_ref[:, 3])
-    Gtol = 1e-3
     G_un_eff = np.zeros(G_target.size)
 
     grads_per_shell = np.zeros(G_target.size)  # for sanity check
@@ -2142,8 +2201,15 @@ def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs):
         G_un_eff[ig] = G_target[ig]  # np.mean(G[i_shell])
         Geff[i_shell] = G_target[ig]
     chk = G.size == np.sum(grads_per_shell)
-    assert chk, ("%d distinct b-values vs expected %d" %
-                 (np.sum(grads_per_shell), G.size))
+
+    msg = ('Mismatch between reference scheme matrix and bvals. '
+           ' Could only map %d/%d b-values (equivalently, gradient'
+           ' intensities G) from the specified bvals to the b-values'
+           ' contained in the reference scheme matrix. You may want to'
+           ' change the tolerance on gradient intensity G (currently '
+           '%g T/m).' % (np.sum(grads_per_shell), G.size, Gtol))
+    if not chk:
+        raise ValueError(msg)
     sch_mat[:, 3] = Geff
 
     # Copy and paste unique reference timing parameters

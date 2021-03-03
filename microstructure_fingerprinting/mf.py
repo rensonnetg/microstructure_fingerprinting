@@ -73,11 +73,11 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     """
     # if ratio of large fasc over small fasc is more than this, small fasc is
     # discarded unless its relative weight exceeded the keep threshold
-    ratio = 3.0
+    ratio = 2.5
     # relative weight above which no fascicle can ever be discarded
-    w_keep = 0.18
+    w_keep = 0.20
     # relative weight under which a fascicle is discarded
-    w_small = 0.10
+    w_small = 0.075
     # crossing angle under which 2 orientations are merged [deg]
     ang_min = 15
 
@@ -142,6 +142,7 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
             msg = ('In \'%s\' peak mode, last dimension of mu1 and mu2 '
                    'should have size %d. Detected %d and %d.'
                    % (lastdimsize, mu1.shape[-1], mu2.shape[-1]))
+            raise ValueError(msg)
 
 #    peakmode = ''
 #    if mu1.shape[-1] == 2 and mu2.shape[-1] == 2:
@@ -165,14 +166,15 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     frac2 = frac2[mask > 0]
     mu1 = mu1[mask > 0]
     mu2 = mu2[mask > 0]
+    max_peaks = 2
 
     # Prepare output. ! In a voxel with only one fascicle, that fascicle
     # must be Population zero in the peaks file.
-    frac_clean = np.zeros((ROI_size, 2))
+    frac_clean = np.zeros((ROI_size, max_peaks))
     frac_clean[:, 0] = frac1
     frac_clean[:, 1] = frac2
-    peaks = np.zeros((ROI_size, 6))
-    num_fasc = np.ones(ROI_size) * 2
+    peaks = np.zeros((ROI_size, 3*max_peaks))
+    num_fasc = np.ones(ROI_size) * max_peaks
 
     if peakmode == 'colat_longit':
         # From colatitude-longitude to x-y-z coordinates
@@ -194,10 +196,10 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     elif peakmode == 'tensor':
         # Get eigenvectors (eigenvalues in ascending order)
         (d1, eigv1) = np.linalg.eigh(
-            mfu.DT_vec_to_2Darray(mu1)
+            mfu.DT_vec_to_2Darray(mu1, order='column')
             )
         (d2, eigv2) = np.linalg.eigh(
-            mfu.DT_vec_to_2Darray(mu2)
+            mfu.DT_vec_to_2Darray(mu2, order='column')
             )
         # Keep main eigenvector in each voxel. Keep zero vectors
         # for zero matrices (eigh returns matrix of unit
@@ -233,8 +235,8 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     # Get rid of fascicles relatively too small compared to dominant fascicle
     # Case 1: fascicle 0 too small, transfer fasc 1 over to fasc 0
     f0small = ((frac_clean[:, 1] > ratio * frac_clean[:, 0]) &
-               (frac_clean[:, 0] < w_keep))
-    if np.sum(f0small) > 0:
+               (frac_clean[:, 0] < w_keep))  # (ROI_size,)
+    if np.any(f0small):
         peaks[f0small, :3] = peaks[f0small, 3:6]
         peaks[f0small, 3:6] = 0
         frac_clean[f0small, 0] = frac_clean[f0small, 1]
@@ -243,8 +245,8 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
 
     # Case 2: fascicle 1 too small, simply discard it without weight transfer
     f1small = ((frac_clean[:, 0] > ratio * frac_clean[:, 1]) &
-               (frac_clean[:, 1] < w_keep))
-    if np.sum(f1small) > 0:
+               (frac_clean[:, 1] < w_keep))  # (ROI_size,)
+    if np.any(f1small):
         peaks[f1small, 3:6] = 0
         frac_clean[f1small, 1] = 0
         num_fasc[f1small] = (frac_clean[f1small, 0] > 0) * 1
@@ -252,20 +254,65 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     # Get rid of small (absolute) weights ignored by previous step
     # (one weight could be comparable to another weight but both weights
     # could still be very small)
+    # TODO: do not shift from Pop 1 to Pop 0 after removing Pop 0 and sort
+    # afterwards
+    # TODO: either remove all small weights OR to match NeuroImage 2019
+    # paper, just remove secondary fascicles
     w0small = frac_clean[:, 0] < w_small
-    if np.sum(w0small) > 0:
-        peaks[w0small, :3] = peaks[w0small, 3:6]
-        peaks[w0small, 3:6] = 0
-        frac_clean[w0small, 0] = frac_clean[w0small, 1]
-        frac_clean[w0small, 1] = 0
-        num_fasc[w0small] = (frac_clean[w0small, 0] > 0) * 1
+    if np.any(w0small):
+        peaks[w0small, :3] = 0
+        frac_clean[w0small, 0] = 0
+        num_fasc[w0small] = num_fasc[w0small] - 1
 
-    # Easier case where second fascicle has a very low absolute weight
+    # Get rid of small absolute weights in secondary fascicles ignored by
+    # previous steps (e.g., one weight could be comparable to another weight
+    # but both weights could still be very small). Removing only secondary
+    # fascicles correspods to methodlogy adopted in NeuroImage 2019 paper.
+    # Easy case where second fascicle has a very low absolute weight
     w1small = frac_clean[:, 1] < w_small
-    if np.sum(w1small) > 0:
+    if np.any(w1small):
         peaks[w1small, 3:6] = 0
         frac_clean[w1small, 1] = 0
         num_fasc[w1small] = (frac_clean[w1small, 0] > 0) * 1
+
+    # Sort peaks per descending fraction value
+    i_srt_f = np.argsort(frac_clean, axis=-1)[:, ::-1]  # largest to smallest
+    # Assuming up to max_peaks=3 peaks considered, ROI_size=4 voxels in
+    # our mask, assuming i_srt_f with shape (ROI_size, max_peaks) is equal to
+    # [[0, 2, 1],
+    #  [1, 2, 0],
+    #  [0, 1, 2],
+    #  [0, 1, 2]]
+    # we need i_peaks, with shape (ROI_size, 3*max_peaks) = (4, 9), to be
+    # [[0, 1, 2, 6, 7, 8, 3, 4, 5],
+    #  [3, 4, 5, 6, 7, 8, 0, 1, 2],
+    #  [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    #  [0, 1, 2, 3, 4, 5, 6, 7, 8]],
+    # which can be decomposed as K + T with
+    # K =
+    # [[0*3, 0*3, 0*3, 2*3, 2*3, 2*3, 1*3, 1*3, 1*3],
+    #  [1*3, 1*3, 1*3, 2*3, 2*3, 2*3, 0*3, 0*3, 0*3],
+    #  [0*3, 0*3, 0*3, 1*3, 1*3, 1*3, 2*3, 2*3, 2*3],
+    #  [0*3, 0*3, 0*3, 1*3, 1*3, 1*3, 2*3, 2*3, 2*3]]
+    # R =
+    # [[0, 1, 2, 0, 1, 2, 0, 1, 2],
+    #  [0, 1, 2, 0, 1, 2, 0, 1, 2],
+    #  [0, 1, 2, 0, 1, 2, 0, 1, 2],
+    #  [0, 1, 2, 0, 1, 2, 0, 1, 2]]
+    # where K is the Kronecker product of i_srt_f and [[3, 3, 3]]
+    # and R is a repetition (or tiling) of the matrix [[0, 1, 2]]
+    # ROI_size=4 times along dim 0 and max_peaks=3 times along dim 1
+    i_peaks = (np.kron(i_srt_f, 3*np.ones((1, 3), dtype=np.int))
+               + np.tile(np.array([[0, 1, 2]]), [ROI_size, max_peaks]))
+    # i_peaks has shape (ROI_size, 3*max_peaks) and contains column indices.
+    # Row indices must also have shape (ROI_size, 3*max_peaks)
+    # i_rows = [[0, 0, 0, 0, 0, 0, 0, 0, 0],
+    #           [1, 1, 1, 1, 1, 1, 1, 1, 1],
+    #            ...
+    #           [ROI_size-1, ROI_size-1, ..., ROI_size-1]]
+    i_rows = np.arange(ROI_size)[:, np.newaxis]  #  (ROIsize, 1) for broadcast
+    # Final sorting is done by
+    # peaks = peaks[i_rows, i_peaks]
 
     # Return
     peaks_out = np.zeros(mask.shape + (6,))
@@ -453,14 +500,14 @@ class MFModel():
     def _get_sch_mat_from_bval_bvec(self, bvals, bvecs):
         """Generates PGSE scheme matrix from bval and bvec files or arrays.
 
-        The values of Delta, delta and TE must have been provided to the
+        The values of Delta, delta and TE must have been provided to the model
         upon instantiation, for instance in a dense, multi-shell PGSE scheme
         matrix.
 
         Parameters
         ----------
         bvals: str or NumPy array
-            b-values in ms/mm^2 (typically around 1000)
+            b-values in s/mm^2 (typically around 1000)
         bvecs: str or NumPy array
             unit-norm 3D vectors (will be transposed automatically)
 
@@ -798,16 +845,20 @@ class MFModel():
                                + (0,) + (slice(None),))
                         peak_arg_i = peak_arg_i[idx]
                     # Get eigenvectors (eigenvalues in ascending order)
+                    # shape of tensor file data is nx, ny, nz, 1, 6
+                    # applying mask transforms it into (n_roi, 1, 6)
+                    # 2D array has shape (n_roi, 3, 3), d (n_roi, 3) and eigv
+                    # (n_roi, 3, 3)
                     (d, eigv) = np.linalg.eigh(
-                        mfu.DT_vec_to_2Darray(peak_arg_i[mask_arr > 0, :])
-                        )  # shape of tensor file data is nx, ny, nz, 1, 6
+                        mfu.DT_vec_to_2Darray(peak_arg_i[mask_arr > 0, :],
+                                              order='column')
+                        )
                     # Keep main eigenvector in each voxel. Keep zero vectors
                     # for zero matrices (eigh returns matrix of unit
                     # eigenvectors):
-                    peaks_roi[:,
-                              3*i:3*i+3] = (
-                        eigv[..., -1] * (np.abs(d)[..., -1] > 0)[:,
-                                                                 np.newaxis])
+                    mask_nnz = (np.abs(d)[..., -1] > 0)[:, np.newaxis]
+                    # mask_nnz has shape (n_roi, 1) to broadcast to (n_roi, 3)
+                    peaks_roi[:, 3*i:3*i+3] = eigv[..., -1] * mask_nnz
 
         for i in range(maxfasc):
             n = i + 1
@@ -841,6 +892,8 @@ class MFModel():
             if bvals is None or bvecs is None:
                 raise TypeError("If no schemefile is provided, then both"
                                 " bvals and bvecs must be specified.")
+            # TODO: replace call here by
+            # mf_utils.get_PGSE_scheme_from_bval_bvec_dense
             pgse_scheme = self._get_sch_mat_from_bval_bvec(bvals, bvecs)
         num_seq = pgse_scheme.shape[0]
         gam = mfu.get_gyromagnetic_ratio('H')
@@ -1086,7 +1139,7 @@ class MFModelFit():
                 prop_k_in_mask = fitinfo['_' + n][ID_k] * (nu_k > 0)
                 prop_map = np.zeros(mask.shape)
                 prop_map[mask > 0] = prop_k_in_mask
-                par_name = n + '_f%d' % k
+                par_name = n + '_f%d' % k  # start numbering at zero
                 setattr(self, par_name, prop_map)
                 parlist.append(par_name)
         self.fvf_tot = np.zeros(mask.shape)
