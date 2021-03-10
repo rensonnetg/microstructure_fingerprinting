@@ -6,19 +6,31 @@ User interface for microstructure fingerprinting following Dipy's style.
 
 @author: rensonnetg
 """
+import multiprocessing as mp
+import numpy as np
+import os
+import time
+
+# import modules from package
 try:
-    # package added to Python environment
+    # microstructure_fingerprinting package added to Python environment
     from . import mf_utils as mfu
 except ImportError:
     # local, occasional use
     import mf_utils as mfu
 
-import multiprocessing as mp
-import nibabel as nib
-import numpy as np
-import os
-import time
+try:
+    # microstructure_fingerprinting package added to Python environment
+    from .tripwire import TripWire
+except ImportError:
+    # local, occasional use
+    from tripwire import TripWire
 
+# Optionnal packages, will only raise an error if actually used
+try:
+    import nibabel as nib
+except ImportError:
+    nib = TripWire('Importing nibabel raised an ImportError.')
 
 def cleanup_2fascicles(frac1, frac2, peakmode,
                        mu1, mu2, mask, frac12=None):
@@ -312,7 +324,7 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     #           [ROI_size-1, ROI_size-1, ..., ROI_size-1]]
     i_rows = np.arange(ROI_size)[:, np.newaxis]  #  (ROIsize, 1) for broadcast
     # Final sorting is done by
-    # peaks = peaks[i_rows, i_peaks]
+    peaks = peaks[i_rows, i_peaks]
 
     # Return
     peaks_out = np.zeros(mask.shape + (6,))
@@ -397,15 +409,19 @@ def _fit_voxel(i, vox_data, sm):
     # Perform combinatorial non-negative linear least squares
     subdic_sizes = np.atleast_1d(subdic_sizes)  # to NumPy array
 
-    (w_nnz,
-     ind_subdic,
-     ind_totdic,
-     SoS,
+    (w_nnz,  # non-negative weights (one per subdictionary)
+     ind_subdic,  # index of non-zero atom within each sub-dictionary
+     ind_totdic,  # index of non-zero atom in large dictionary
+     SoS,  # sum-of-squares residual
      y_rec) = mfu.solve_exhaustive_posweights(D[:, :dicsize],
                                               y,
                                               subdic_sizes)
     M0_vox = np.sum(w_nnz)
-    nu = w_nnz/M0_vox
+    if np.abs(M0_vox) > 0:
+        # abs could be dropped bc w_nnz[k] >= 0 for all k
+        nu = w_nnz/M0_vox
+    else:
+        nu = w_nnz
 
     # Return results as a (num_params,) array
 

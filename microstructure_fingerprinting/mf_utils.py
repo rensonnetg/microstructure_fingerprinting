@@ -46,13 +46,29 @@ https://github.com/dipy/dipy/blob/master/dipy/utils/optpkg.py
 @author: rensonnetg
 """
 from itertools import product
-import matplotlib.pyplot as plt
 import numpy as np
-import numba as nba
 from scipy.interpolate import interp1d
 import scipy.optimize
 import scipy.io
 import os.path
+
+# import modules from package
+try:
+    # microstructure_fingerprinting package added to Python environment
+    from .tripwire import TripWire
+except ImportError:
+    # local, occasional use
+    from tripwire import TripWire
+
+# Optionnal packages, will only raise an error if actually used
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = TripWire('Importing matplotlib.pyplot raised an ImportError.')
+try:
+    import numba as nba
+except ImportError:
+    nba = TripWire('Importing numba raised an ImportError.')
 
 _all_solvers = ['solve_exhaustive_posweights',
                 'solve_exhaustive_posweights_1',
@@ -66,6 +82,7 @@ _all_maths = ['get_perp_vector',
               'vrrotvec2mat']
 _all_dwmri = ['DT_array_to_vec',
               'DT_vec_to_2Darray',
+              'DT_vec_to_peaks',
               'peaks_to_DT_vec',
               'get_gyromagnetic_ratio',
               'rotate_scheme_mat',
@@ -938,6 +955,68 @@ def DT_vec_to_2Darray(DT_vec, order):
     else:
         raise ValueError("Unknown order option \"%s\"." % order)
     return out
+
+
+def DT_vec_to_peaks(DT_vec, order, mask=None):
+    """ Converts diffusion tensor 6-element vectors to unit-norm peaks in 3D.
+
+    Args:
+      DT_vec: (..., 6) NumPy array, where last dimension holds the data
+        defining a real-valued symmetric diffusion tensor.
+      order:
+        'row' assumes values are provided in the order
+          [xx xy xz yy yz zz]
+        'column' assumes [xx xy yy xz yz zz]
+        'diagonal' assumes [xx yy zz xy yz xz]
+
+        Note that the ordering adopted here refers to the upper part of the
+        symmetric matrix (m_ij with j>=i). In that sense, 'row' ordering
+        is default for .nrrd/.nhdr files [1] and 'column' ordering is the
+        convention for NIfTI files [2]. Even though the official NIfTI-1
+        documentation mentions 'row' ordering, it actually refers to the
+        lower half of the symmetric matrix, which is equivalent to
+        our 'column' ordering of the upper half.
+    mask: NumPy array with shape DT_vec.shape[:-1], e.g. (10, 2) if
+      DT_vec.shape is (10, 2, 6). If shape of DT_vec is (6,) however then
+      mask.shape is (1,). Default is all True.
+
+    Returns:
+      (..., 3) NumPy array containing the normalized main eigenvectors. The
+      number of dimensions is equal to that of the input and could be 1.
+
+    References:
+      [1] https://www.na-mic.org/wiki/NAMIC_Wiki:DTI:Tensor_format#Using_NRRD_for_DWI_and_DTI_File_I.2FO_.28from_Gordon_Kindlmann.29
+      [2] https://nifti.nimh.nih.gov/nifti-1/documentation/nifti1diagrams_v2.pdf
+    """
+    DT_ndim = DT_vec.ndim  # useful for 1D case
+
+    if DT_vec.ndim < 2:
+        DT_vec = np.atleast_2d(DT_vec)
+    if DT_vec.shape[-1] != 6:
+        raise ValueError('DT_vec should have size 6 along last dimension.'
+                         ' Detected %d.' % (DT_vec.shape[-1],))
+    if mask is None:
+        mask = np.full(DT_vec.shape[:-1], True, dtype=np.bool)
+
+    if mask.ndim != DT_vec.ndim - 1:
+        raise ValueError('mask should have %d dimension(s) since DT_vec has '
+                         '%d, detected %d instead.' %
+                         (DT_vec.ndim-1, DT_vec.ndim, mask.ndim))
+
+    # Get arrays with shapes (n_roi, 3) and (n_roi, 3, 3)
+    (eigval, eigvec) = np.linalg.eigh(
+        DT_vec_to_2Darray(DT_vec[mask > 0, :], order=order))
+    # Make sure zero tensors have zero peaks (np.linalg.eigh returns a unit
+    # matrix of eigenvectors for zero tensors, which we do not want). Look
+    # at last (largest) eigenvalue
+    mask_nnz = (np.abs(eigval)[..., -1] > 0)[:, np.newaxis]
+    out_shape = mask.shape + (3,)
+    peaks = np.zeros(out_shape)
+    peaks[mask > 0] = eigvec[..., -1] * mask_nnz
+    if DT_ndim == 1:
+        # return 1D array if input was 1D
+        peaks = np.squeeze(peaks)
+    return peaks
 
 
 def peaks_to_DT_vec(peaks, order, lam_par=2e-3, lam_perp=0.1e-3):
