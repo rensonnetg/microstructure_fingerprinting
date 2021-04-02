@@ -19,9 +19,12 @@ A factor 4 translates in an approximately sqrt(4)-fold decrease in the error.
 
 @author: rensonnetg
 """
+import os
+import matplotlib
+# if os.name == 'posix' and "DISPLAY" not in os.environ:
+matplotlib.use('Agg')  # for CI/CD without display
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 import sys
 import time
 
