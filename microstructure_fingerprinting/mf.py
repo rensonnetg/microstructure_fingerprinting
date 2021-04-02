@@ -103,11 +103,11 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
             raise ValueError(msg)
 
     if isinstance(mask, str):
-        mask = nib.load(mask).get_data()
+        mask = nib.load(mask).get_fdata()
     if isinstance(frac1, str):
-        frac1 = nib.load(frac1).get_data()
+        frac1 = nib.load(frac1).get_fdata()
     if isinstance(frac2, str):
-        frac2 = nib.load(frac2).get_data()
+        frac2 = nib.load(frac2).get_fdata()
 
     if frac12 is not None:
         if isinstance(frac12, str):
@@ -130,9 +130,9 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
         raise ValueError("frac2 should have the same shape as mask")
 
     if isinstance(mu1, str):
-        mu1 = nib.load(mu1).get_data()
+        mu1 = nib.load(mu1).get_fdata()
     if isinstance(mu2, str):
-        mu2 = nib.load(mu2).get_data()
+        mu2 = nib.load(mu2).get_fdata()
 
     # Check shape of peak arguments
     if peakmode == 'colat_longit':
@@ -625,7 +625,7 @@ class MFModel():
             if VRB >= 2:
                 print("Loading data from file %s..." % data)
             nii_affine = nib.load(data).affine
-            data_arr = nib.load(data).get_data()
+            data_arr = nib.load(data).get_fdata()
             dur_0 = time.time() - st_0
             if VRB >= 2:
                 print("Data loaded in %g s." % dur_0)
@@ -636,7 +636,7 @@ class MFModel():
         if isinstance(mask, str):
             if nii_affine is None:
                 nii_affine = nib.load(mask).affine
-            mask_arr = nib.load(mask).get_data()
+            mask_arr = nib.load(mask).get_fdata()
         else:
             mask_arr = mask  # no need to copy, won't be modified
 
@@ -665,7 +665,7 @@ class MFModel():
                 # Strictly speaking, the array here is not restricted to the
                 # ROI yet but it will be later. This way we don't keep a big
                 # array in memory after reduction to ROI.
-                numfasc_roi = nib.load(numfasc).get_data()
+                numfasc_roi = nib.load(numfasc).get_fdata()
             else:  # NumPy array
                 numfasc_roi = numfasc
             nfasc_sh = numfasc_roi.shape
@@ -695,7 +695,7 @@ class MFModel():
             if isinstance(peaks, str):
                 # Not strictly in ROI yet, but the name is used to avoid
                 # keeping big array in memory after reduction to ROI below
-                peaks_roi = nib.load(peaks).get_data()
+                peaks_roi = nib.load(peaks).get_fdata()
                 if nii_affine is None:
                     nii_affine = nib.load(peaks).affine
             else:  # NumPy array
@@ -745,7 +745,7 @@ class MFModel():
                       (len(peak_arg) - maxfasc, maxfasc))
             for i in range(np.min([len(peak_arg), maxfasc])):
                 if isinstance(peak_arg[i], str):
-                    peak_arg_i = nib.load(peak_arg[i]).get_data()
+                    peak_arg_i = nib.load(peak_arg[i]).get_fdata()
                     if nii_affine is None:
                         nii_affine = nib.load(peak_arg[i]).affine
                 else:
@@ -855,7 +855,7 @@ class MFModel():
         else:
             # mask covering the whole data volume provided
             if isinstance(csf_mask, str):  # from a file
-                csf_mask = nib.load(csf_mask).get_data()
+                csf_mask = nib.load(csf_mask).get_fdata()
                 if nii_affine is None:
                     nii_affine = nib.load(csf_mask).affine
             # At this point, csf_mask must be a NumPy array with ndim>=2
@@ -877,7 +877,7 @@ class MFModel():
         else:
             # mask covering the whole data volume provided
             if isinstance(ear_mask, str):  # from a file
-                ear_mask = nib.load(ear_mask).get_data()
+                ear_mask = nib.load(ear_mask).get_fdata()
                 if nii_affine is None:
                     nii_affine = nib.load(ear_mask).affine
             # At this point, ear_mask must be a NumPy array with ndim>=2

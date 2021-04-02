@@ -1,0 +1,45 @@
+<MFM>
+  <Tensors>
+    <Tensor file="C001_diamond_small_mtm_t0.nii.gz"/>
+    <Tensor file="C001_diamond_small_mtm_t1.nii.gz"/>
+  </Tensors>
+  <Fractions file="C001_diamond_small_mtm_fractions.nii.gz"/>
+  <Tensors>
+    <Tensor file="C001_diamond_small_t0.nii.gz"/>
+    <Tensor file="C001_diamond_small_t1.nii.gz"/>
+  </Tensors>
+  <Fractions file="C001_diamond_small_fractions.nii.gz"/>
+  <FreeWaterDiffusivity file="0.003000"/>
+  <Isotropic2Diffusivity file="0.001000"/>
+  <DIAMONDkappa file="C001_diamond_small_kappa.nii.gz"/>
+  <B0 file="C001_diamond_small_b0.nii.gz"/>
+  <MetaData>
+    <CommandLine value="E:\rensonnetg\Software\crlDCIEstimate\build_win_VS\src\Release\crlDCIEstimate.exe -i C001_dwi_small.nii.gz -m C001_mask_small.nii.gz -n 2 --automose aicu --fascicle diamondcyl --omtm 1 --isorfraction 0 -o C001_diamond_small.nii.gz"/>
+    <Directory value="E:\rensonnetg\OneDrive - UCL\Doctorat\Brain_microstructure\microstructure_fingerprinting\tests\integration\fixtures"/>
+    <ComputationTime value="04s"/>
+    <RealProcessorTime value="04s"/>
+    <OptimizationAlgorithm value="bobyqa"/>
+    <FractionsSumToOne value="Y"/>
+    <RescaleSignalIntensity value="true"/>
+    <ForcedMaxSignalIntensityValue value="-1"/>
+    <ForcedMeanSignalIntensityValue value="500"/>
+    <RescaleIntensityFactor value="0.834505"/>
+    <FreeDiffBound value="0.003"/>
+    <AxialDiffBound value="0.003"/>
+    <RadialDiffBound value="0.003"/>
+    <BoundingBox value=""/>
+    <RegularizationWeight value="1"/>
+    <CorrectedLeastSquare value="false"/>
+    <CorrectedLeastSquareNewVersion value="false"/>
+    <MaxPasses value="10"/>
+    <Noise model value="gaussian"/>
+    <SigmaValue value="-1"/>
+    <SigmaVoxelWise value="false"/>
+    <IgnoreSmallSiS0 value="true"/>
+    <AutoModelSelection value="aicu"/>
+    <ModelSelectionMaxIter value="30"/>
+    <ModelSelectionThreshold value="-1"/>
+    <ModelSelectionEnsureMinimumFraction value="0"/>
+    <S0Threshold value="1"/>
+  </MetaData>
+</MFM>
