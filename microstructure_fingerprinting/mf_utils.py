@@ -1779,7 +1779,7 @@ def interp_PGSE_from_multishell(sch_mat, newdir,
         # Find unique G values in dense sampling
         msinterp['Gms_un'], i_Gms = np.unique(sch_mat_ms[:, 3],
                                               return_inverse=True)
-    # At this point, we have initialized
+    # At this point, we have initialized:
     #  num_subs, sch_DeldelTE, msinterp['Gms_un'], i_Gms, ordir, newdir
 
     # W/ or W/o initialization: check inputs
@@ -2023,7 +2023,8 @@ def init_PGSE_multishell_interp(sig_ms, sch_mat_ms, ordir):
             if np.any(~chk):
                 bad_subs = np.where(~chk)[0]
                 raise ValueError('Distinct signal values in provided multi-'
-                                 'shell sampling for zero gradients, for '
+                                 'shell sampling for zero gradients '
+                                 '(b0 acquistions), for '
                                  '%d substrate(s) [%s]' %
                                  (bad_subs.shape[0],
                                   " ".join("{:d}".format(b)
@@ -2183,7 +2184,8 @@ def import_PGSE_scheme(scheme):
         raise ValueError('Detected %d sequence(s) in which delta (6th column)'
                          ' was greater than Delta (5th column).' %
                          np.sum(delta > Delta))
-    if np.any(TE < (Delta+delta)):
+    if np.any(TE < (Delta+delta)*0.999):
+        # this comparison is subject to numerical round-off errors
         raise ValueError('Detected %d sequence(s) in which TE (7th column)'
                          ' was lower than Delta+delta.' %
                          np.sum(TE < (Delta+delta)))
@@ -2289,6 +2291,8 @@ def get_PGSE_scheme_from_bval_bvec_dense(sch_mat_dense, bvals, bvecs,
            '%g T/m).' % (np.sum(grads_per_shell), G.size, Gtol))
     if not chk:
         raise ValueError(msg)
+    # TODO: check why this is needed (for rotations?), why not keep
+    # "irregular" G values matching the actual b-values ?
     sch_mat[:, 3] = Geff
 
     # Copy and paste unique reference timing parameters

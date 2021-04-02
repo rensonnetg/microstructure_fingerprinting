@@ -32,6 +32,7 @@ try:
 except ImportError:
     nib = TripWire('Importing nibabel raised an ImportError.')
 
+
 def cleanup_2fascicles(frac1, frac2, peakmode,
                        mu1, mu2, mask, frac12=None):
     """Cleans up detected fascicle orientations (or "peaks").
@@ -123,15 +124,15 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
             frac1 = frac12[..., 0]
             frac2 = frac12[..., 1]
 
-    if isinstance(mu1, str):
-        mu1 = nib.load(mu1).get_data()
-    if isinstance(mu2, str):
-        mu2 = nib.load(mu2).get_data()
-
     if frac1.shape != mask.shape:
         raise ValueError("frac1 should have the same shape as mask")
     if frac2.shape != mask.shape:
         raise ValueError("frac2 should have the same shape as mask")
+
+    if isinstance(mu1, str):
+        mu1 = nib.load(mu1).get_data()
+    if isinstance(mu2, str):
+        mu2 = nib.load(mu2).get_data()
 
     # Check shape of peak arguments
     if peakmode == 'colat_longit':
@@ -500,7 +501,8 @@ class MFModel():
             raise ValueError("Dictionary should either be a valid path to a"
                              " Matlab-like mat file or a Python dictionary.")
         # Compute multi-shell interpolator object
-        # TODO: do upon dictionary creation, pickle/dill it and reuse...
+        # TODO: upon dictionary creation, pickle/dill it
+        # and reuse interpolator?
         self.ms_interpolator = mfu.init_PGSE_multishell_interp(
             self.dic['dictionary'],
             self.dic['sch_mat'],
@@ -510,86 +512,6 @@ class MFModel():
               " restricted (EAR) compartment." %
               (self.dic['num_atom'], self.dic['num_ear']))
         # TODO: check consistency of dictionary
-
-    # TODO: remove this function definition and use mf_utils
-    # get_PGSE_scheme_from_bval_bvec
-    def _get_sch_mat_from_bval_bvec(self, bvals, bvecs):
-        """Generates PGSE scheme matrix from bval and bvec files or arrays.
-
-        The values of Delta, delta and TE must have been provided to the model
-        upon instantiation, for instance in a dense, multi-shell PGSE scheme
-        matrix.
-
-        Parameters
-        ----------
-        bvals: str or NumPy array
-            b-values in s/mm^2 (typically around 1000)
-        bvecs: str or NumPy array
-            unit-norm 3D vectors (will be transposed automatically)
-
-        Returns
-        ---------
-        sch_mat: 2-D NumPy array with shape (n_seq, 7)
-        """
-        sch_mat_ref = self.dic['sch_mat']
-        if isinstance(bvals, str):
-            bvals = np.loadtxt(bvals)
-        if isinstance(bvecs, str):
-            bvecs = np.atleast_2d(np.loadtxt(bvecs))
-
-        # bvals from s/mm^2 to s/m^2
-        bvals = bvals * 1e6
-
-        # Check bvecs
-        if np.ndim(bvecs) != 2:
-            raise ValueError("bvecs array should have 2 dimensions,"
-                             " detected %d." % bvecs.ndim)
-        if bvecs.shape[0] != bvals.size and bvecs.shape[1] != bvals.size:
-            raise ValueError("Number of b-vectors does not match number"
-                             " of b-values (%d)" % bvals.size)
-
-        # Preallocate sheme matrix and transpose bvecs if needed
-        sch_mat = np.zeros((bvals.size, 7))
-        if bvecs.shape[0] == 3:
-            sch_mat[:, :3] = bvecs.transpose()
-        elif bvecs.shape[1] == 3:
-            sch_mat[:, :3] = bvecs
-        else:
-            raise ValueError("Vectors in bvecs should be 3-dimensional."
-                             " However, detected no dimension with size 3.")
-
-        # Normalize gradient directions
-        gnorm = np.sqrt(np.sum(sch_mat[:, :3]**2, axis=1))
-        sch_mat[gnorm > 0, :3] = (sch_mat[gnorm > 0, :3] /
-                                  gnorm[gnorm > 0][:, np.newaxis])
-
-        # Get gradient intensity from bval assuming unique Delta/deta
-        gam = mfu.get_gyromagnetic_ratio('H')
-        Del_prot = sch_mat_ref[0, 4]
-        del_prot = sch_mat_ref[0, 5]
-        TE_prot = sch_mat_ref[0, 6]
-        G = np.sqrt(bvals/(Del_prot - del_prot/3))/(gam*del_prot)
-        Geff = np.zeros(bvals.shape[0])
-
-        # Map each bval to reference G within a given tolerance
-        G_target = np.unique(sch_mat_ref[:, 3])
-        Gtol = 1e-3
-        G_un_eff = np.zeros(G_target.size)
-
-        grads_per_shell = np.zeros(G_target.size)  # for sanity check
-        for ig in range(G_target.size):
-            i_shell = np.where(np.abs(G_target[ig] - G) < Gtol)[0]
-            grads_per_shell[ig] = i_shell.size
-            G_un_eff[ig] = G_target[ig]  # np.mean(G[i_shell])
-            Geff[i_shell] = G_target[ig]
-        chk = G.size == np.sum(grads_per_shell)
-        assert chk, ("%d distinct b-values vs expected %d" %
-                     (np.sum(grads_per_shell), G.size))
-        sch_mat[:, 3] = Geff
-
-        # Copy and paste unique reference timing parameters
-        sch_mat[:, 4:7] = np.array([Del_prot, del_prot, TE_prot])
-        return sch_mat
 
     def fit(self,
             data, mask, numfasc, *,  # named keyword arguments after this
@@ -908,9 +830,11 @@ class MFModel():
             if bvals is None or bvecs is None:
                 raise TypeError("If no schemefile is provided, then both"
                                 " bvals and bvecs must be specified.")
-            # TODO: replace call here by
-            # mf_utils.get_PGSE_scheme_from_bval_bvec_dense
-            pgse_scheme = self._get_sch_mat_from_bval_bvec(bvals, bvecs)
+            # TODO: check relevance of Gtol parameter, shouldn't we be able
+            # to interpolate to any value (and maybe issue a warning?)
+            Gtol = 1e-3
+            pgse_scheme = mfu.get_PGSE_scheme_from_bval_bvec_dense(
+                    self.dic['sch_mat'], bvals, bvecs, Gtol)
         num_seq = pgse_scheme.shape[0]
         gam = mfu.get_gyromagnetic_ratio('H')
         G = pgse_scheme[:, 3]
