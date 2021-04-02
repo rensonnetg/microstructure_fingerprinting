@@ -315,7 +315,7 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     # where K is the Kronecker product of i_srt_f and [[3, 3, 3]]
     # and R is a repetition (or tiling) of the matrix [[0, 1, 2]]
     # ROI_size=4 times along dim 0 and max_peaks=3 times along dim 1
-    i_peaks = (np.kron(i_srt_f, 3*np.ones((1, 3), dtype=np.int))
+    i_peaks = (np.kron(i_srt_f, 3*np.ones((1, 3), dtype=int))
                + np.tile(np.array([[0, 1, 2]]), [ROI_size, max_peaks]))
     # i_peaks has shape (ROI_size, 3*max_peaks) and contains column indices.
     # Row indices must also have shape (ROI_size, 3*max_peaks)
@@ -659,7 +659,7 @@ class MFModel():
         # Number of fascicles in model
         if np.isscalar(numfasc) and not isinstance(numfasc, str):
             # scalar indicator provided for the whole data
-            numfasc_roi = np.full(ROI_size, numfasc, dtype=np.int)
+            numfasc_roi = np.full(ROI_size, numfasc, dtype=int)
         else:  # non scalar mode (array of array in file)
             if isinstance(numfasc, str):
                 # Strictly speaking, the array here is not restricted to the
@@ -676,7 +676,7 @@ class MFModel():
                                  (" ".join("%d" % x for x in img_shape),
                                   " ".join("%d" % x for x in nfasc_sh)))
             # reduce to ROI:
-            numfasc_roi = numfasc_roi[mask_arr > 0].astype(np.int)
+            numfasc_roi = numfasc_roi[mask_arr > 0].astype(int)
 
         maxfasc = int(np.max(numfasc_roi))
         if maxfasc > MFModel.MAX_FASC:
@@ -848,10 +848,10 @@ class MFModel():
         # cerebrospinal fluid, extra-axonal restricted
         # ------------------------
         if csf_mask is None:
-            csf_mask = np.zeros(ROI_size, dtype=np.bool)
+            csf_mask = np.zeros(ROI_size, dtype=bool)
         elif np.isscalar(csf_mask) and not isinstance(csf_mask, str):
             # scalar indicator provided for the whole data
-            csf_mask = np.full(ROI_size, csf_mask > 0, dtype=np.bool)
+            csf_mask = np.full(ROI_size, csf_mask > 0, dtype=bool)
         else:
             # mask covering the whole data volume provided
             if isinstance(csf_mask, str):  # from a file
@@ -870,10 +870,10 @@ class MFModel():
         csf_on = np.any(csf_mask > 0)
 
         if ear_mask is None:
-            ear_mask = np.zeros(ROI_size, dtype=np.bool)
+            ear_mask = np.zeros(ROI_size, dtype=bool)
         elif np.isscalar(ear_mask) and not isinstance(ear_mask, str):
             # scalar indicator provided for the whole data
-            ear_mask = np.full(ROI_size, ear_mask > 0, dtype=np.bool)
+            ear_mask = np.full(ROI_size, ear_mask > 0, dtype=bool)
         else:
             # mask covering the whole data volume provided
             if isinstance(ear_mask, str):  # from a file
@@ -1071,7 +1071,7 @@ class MFModelFit():
             setattr(self, par_name, prop_map)
             parlist.append(par_name)
 
-            ID_k = model_params[:, 1+numfasc+k].astype(np.int)
+            ID_k = model_params[:, 1+numfasc+k].astype(int)
             fvf_k = fitinfo['_fvf'][ID_k] * (nu_k > 0)
             fvf_in_mask += nu_k * fvf_k
             for n in fitinfo['fasc_propnames']:
@@ -1097,7 +1097,7 @@ class MFModelFit():
             self.frac_ear[mask > 0] = nu_ear_mask
             parlist.append('frac_ear')
 
-            ID_ear = model_params[:, 2*numfasc + csf_on + 2].astype(np.int)
+            ID_ear = model_params[:, 2*numfasc + csf_on + 2].astype(int)
             self.D_ear = np.zeros(mask.shape)
             self.D_ear[mask > 0] = (fitinfo['DIFF_ear'][ID_ear]
                                     * (nu_ear_mask > 0))

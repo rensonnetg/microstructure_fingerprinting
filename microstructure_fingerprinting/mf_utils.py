@@ -996,7 +996,7 @@ def DT_vec_to_peaks(DT_vec, order, mask=None):
         raise ValueError('DT_vec should have size 6 along last dimension.'
                          ' Detected %d.' % (DT_vec.shape[-1],))
     if mask is None:
-        mask = np.full(DT_vec.shape[:-1], True, dtype=np.bool)
+        mask = np.full(DT_vec.shape[:-1], True, dtype=bool)
 
     if mask.ndim != DT_vec.ndim - 1:
         raise ValueError('mask should have %d dimension(s) since DT_vec has '
