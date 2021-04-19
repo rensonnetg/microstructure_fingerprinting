@@ -7,8 +7,8 @@ on:
   push:
     branches: [ master ]
     paths-ignore: 
-    - **/README.md
-    - .github/workflows/*.y*ml
+      - '**/README.md'
+      - '.github/workflows/*.y*ml'
 
 jobs:
   build:
