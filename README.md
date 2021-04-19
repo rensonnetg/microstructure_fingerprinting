@@ -2,6 +2,35 @@
 # Microstructure fingerprinting
 Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion MRI fingerprints in Python 3.
 
+## Requirements
+This package requires the following packages (it is recommended to use pip or conda)
+- numpy*
+- scipy*
+- matplotlib*
+- nibabel
+- numba
+* some functionalities may actually be available without matplotlib and/or nibabel and/or numba. This package can be imported without them and will only raise an error if a routine requiring one of these dependencies is used. Note that Numba only works with Python 3.6 or higher.
+
+<details>
+  <summary>Examples of tested configurations</summary>
+  Tested in April 2021. See Actions tab for latest builds.
+
+  On Windows Server 2019 with Python 3.6 (CPython 3.6.8) and on Ubunutu 20.04 with Python 3.6 (CPython 3.6.13)
+  - matplotlib-3.3.4
+  - nibabel-3.2.1
+  - numba-0.53.1
+  - numpy-1.19.5
+  - scipy-1.5.4
+
+  On Windows Server 2019 with Python 3.9 (CPython 3.9.2) and on Ubunutu 20.04 with Python 3.9 (CPython 3.9.2)
+  - matplotlib-3.4.1
+  - nibabel-3.2.1
+  - numba-0.53.1
+  - numpy-1.20.2
+  - scipy-1.6.2
+</details>
+
+
 ## Installing & importing
 Download a copy of this repository
 ```
