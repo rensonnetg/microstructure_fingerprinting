@@ -6,7 +6,9 @@ name: Python package
 on:
   push:
     branches: [ master ]
-    paths-ignore: [**/README.me, .github/workflows/*.y*ml]
+    paths-ignore: 
+    - **/README.md
+    - .github/workflows/*.y*ml
 
 jobs:
   build:
