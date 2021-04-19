@@ -103,11 +103,11 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
             raise ValueError(msg)
 
     if isinstance(mask, str):
-        mask = nib.load(mask).get_data()
+        mask = nib.load(mask).get_fdata()
     if isinstance(frac1, str):
-        frac1 = nib.load(frac1).get_data()
+        frac1 = nib.load(frac1).get_fdata()
     if isinstance(frac2, str):
-        frac2 = nib.load(frac2).get_data()
+        frac2 = nib.load(frac2).get_fdata()
 
     if frac12 is not None:
         if isinstance(frac12, str):
@@ -130,9 +130,9 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
         raise ValueError("frac2 should have the same shape as mask")
 
     if isinstance(mu1, str):
-        mu1 = nib.load(mu1).get_data()
+        mu1 = nib.load(mu1).get_fdata()
     if isinstance(mu2, str):
-        mu2 = nib.load(mu2).get_data()
+        mu2 = nib.load(mu2).get_fdata()
 
     # Check shape of peak arguments
     if peakmode == 'colat_longit':
@@ -315,7 +315,7 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     # where K is the Kronecker product of i_srt_f and [[3, 3, 3]]
     # and R is a repetition (or tiling) of the matrix [[0, 1, 2]]
     # ROI_size=4 times along dim 0 and max_peaks=3 times along dim 1
-    i_peaks = (np.kron(i_srt_f, 3*np.ones((1, 3), dtype=np.int))
+    i_peaks = (np.kron(i_srt_f, 3*np.ones((1, 3), dtype=int))
                + np.tile(np.array([[0, 1, 2]]), [ROI_size, max_peaks]))
     # i_peaks has shape (ROI_size, 3*max_peaks) and contains column indices.
     # Row indices must also have shape (ROI_size, 3*max_peaks)
@@ -625,7 +625,7 @@ class MFModel():
             if VRB >= 2:
                 print("Loading data from file %s..." % data)
             nii_affine = nib.load(data).affine
-            data_arr = nib.load(data).get_data()
+            data_arr = nib.load(data).get_fdata()
             dur_0 = time.time() - st_0
             if VRB >= 2:
                 print("Data loaded in %g s." % dur_0)
@@ -636,7 +636,7 @@ class MFModel():
         if isinstance(mask, str):
             if nii_affine is None:
                 nii_affine = nib.load(mask).affine
-            mask_arr = nib.load(mask).get_data()
+            mask_arr = nib.load(mask).get_fdata()
         else:
             mask_arr = mask  # no need to copy, won't be modified
 
@@ -659,13 +659,13 @@ class MFModel():
         # Number of fascicles in model
         if np.isscalar(numfasc) and not isinstance(numfasc, str):
             # scalar indicator provided for the whole data
-            numfasc_roi = np.full(ROI_size, numfasc, dtype=np.int)
+            numfasc_roi = np.full(ROI_size, numfasc, dtype=int)
         else:  # non scalar mode (array of array in file)
             if isinstance(numfasc, str):
                 # Strictly speaking, the array here is not restricted to the
                 # ROI yet but it will be later. This way we don't keep a big
                 # array in memory after reduction to ROI.
-                numfasc_roi = nib.load(numfasc).get_data()
+                numfasc_roi = nib.load(numfasc).get_fdata()
             else:  # NumPy array
                 numfasc_roi = numfasc
             nfasc_sh = numfasc_roi.shape
@@ -676,7 +676,7 @@ class MFModel():
                                  (" ".join("%d" % x for x in img_shape),
                                   " ".join("%d" % x for x in nfasc_sh)))
             # reduce to ROI:
-            numfasc_roi = numfasc_roi[mask_arr > 0].astype(np.int)
+            numfasc_roi = numfasc_roi[mask_arr > 0].astype(int)
 
         maxfasc = int(np.max(numfasc_roi))
         if maxfasc > MFModel.MAX_FASC:
@@ -695,7 +695,7 @@ class MFModel():
             if isinstance(peaks, str):
                 # Not strictly in ROI yet, but the name is used to avoid
                 # keeping big array in memory after reduction to ROI below
-                peaks_roi = nib.load(peaks).get_data()
+                peaks_roi = nib.load(peaks).get_fdata()
                 if nii_affine is None:
                     nii_affine = nib.load(peaks).affine
             else:  # NumPy array
@@ -745,7 +745,7 @@ class MFModel():
                       (len(peak_arg) - maxfasc, maxfasc))
             for i in range(np.min([len(peak_arg), maxfasc])):
                 if isinstance(peak_arg[i], str):
-                    peak_arg_i = nib.load(peak_arg[i]).get_data()
+                    peak_arg_i = nib.load(peak_arg[i]).get_fdata()
                     if nii_affine is None:
                         nii_affine = nib.load(peak_arg[i]).affine
                 else:
@@ -848,14 +848,14 @@ class MFModel():
         # cerebrospinal fluid, extra-axonal restricted
         # ------------------------
         if csf_mask is None:
-            csf_mask = np.zeros(ROI_size, dtype=np.bool)
+            csf_mask = np.zeros(ROI_size, dtype=bool)
         elif np.isscalar(csf_mask) and not isinstance(csf_mask, str):
             # scalar indicator provided for the whole data
-            csf_mask = np.full(ROI_size, csf_mask > 0, dtype=np.bool)
+            csf_mask = np.full(ROI_size, csf_mask > 0, dtype=bool)
         else:
             # mask covering the whole data volume provided
             if isinstance(csf_mask, str):  # from a file
-                csf_mask = nib.load(csf_mask).get_data()
+                csf_mask = nib.load(csf_mask).get_fdata()
                 if nii_affine is None:
                     nii_affine = nib.load(csf_mask).affine
             # At this point, csf_mask must be a NumPy array with ndim>=2
@@ -870,14 +870,14 @@ class MFModel():
         csf_on = np.any(csf_mask > 0)
 
         if ear_mask is None:
-            ear_mask = np.zeros(ROI_size, dtype=np.bool)
+            ear_mask = np.zeros(ROI_size, dtype=bool)
         elif np.isscalar(ear_mask) and not isinstance(ear_mask, str):
             # scalar indicator provided for the whole data
-            ear_mask = np.full(ROI_size, ear_mask > 0, dtype=np.bool)
+            ear_mask = np.full(ROI_size, ear_mask > 0, dtype=bool)
         else:
             # mask covering the whole data volume provided
             if isinstance(ear_mask, str):  # from a file
-                ear_mask = nib.load(ear_mask).get_data()
+                ear_mask = nib.load(ear_mask).get_fdata()
                 if nii_affine is None:
                     nii_affine = nib.load(ear_mask).affine
             # At this point, ear_mask must be a NumPy array with ndim>=2
@@ -1071,7 +1071,7 @@ class MFModelFit():
             setattr(self, par_name, prop_map)
             parlist.append(par_name)
 
-            ID_k = model_params[:, 1+numfasc+k].astype(np.int)
+            ID_k = model_params[:, 1+numfasc+k].astype(int)
             fvf_k = fitinfo['_fvf'][ID_k] * (nu_k > 0)
             fvf_in_mask += nu_k * fvf_k
             for n in fitinfo['fasc_propnames']:
@@ -1097,7 +1097,7 @@ class MFModelFit():
             self.frac_ear[mask > 0] = nu_ear_mask
             parlist.append('frac_ear')
 
-            ID_ear = model_params[:, 2*numfasc + csf_on + 2].astype(np.int)
+            ID_ear = model_params[:, 2*numfasc + csf_on + 2].astype(int)
             self.D_ear = np.zeros(mask.shape)
             self.D_ear[mask > 0] = (fitinfo['DIFF_ear'][ID_ear]
                                     * (nu_ear_mask > 0))

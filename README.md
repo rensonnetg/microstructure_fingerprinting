@@ -1,3 +1,4 @@
+[![Actions status](https://github.com/rensonnetg/microstructure_fingerprinting/actions/workflows/python_package.yaml/badge.svg?branch=test/ci_cd)](https://github.com/rensonnetg/microstructure_fingerprinting/actions/workflows/python_package.yaml)
 # Microstructure fingerprinting
 Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion MRI fingerprints in Python 3.
 
