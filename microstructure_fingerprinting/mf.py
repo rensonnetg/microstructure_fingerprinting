@@ -11,7 +11,7 @@ import numpy as np
 import os
 import time
 
-# import modules from package
+# import modules from current package
 try:
     # microstructure_fingerprinting package added to Python environment
     from . import mf_utils as mfu
@@ -280,7 +280,7 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     # Get rid of small absolute weights in secondary fascicles ignored by
     # previous steps (e.g., one weight could be comparable to another weight
     # but both weights could still be very small). Removing only secondary
-    # fascicles correspods to methodlogy adopted in NeuroImage 2019 paper.
+    # fascicles corresponds to methodlogy adopted in NeuroImage 2019 paper.
     # Easy case where second fascicle has a very low absolute weight
     w1small = frac_clean[:, 1] < w_small
     if np.any(w1small):
@@ -323,7 +323,7 @@ def cleanup_2fascicles(frac1, frac2, peakmode,
     #           [1, 1, 1, 1, 1, 1, 1, 1, 1],
     #            ...
     #           [ROI_size-1, ROI_size-1, ..., ROI_size-1]]
-    i_rows = np.arange(ROI_size)[:, np.newaxis]  #  (ROIsize, 1) for broadcast
+    i_rows = np.arange(ROI_size)[:, np.newaxis]  # (ROIsize, 1) for broadcast
     # Final sorting is done by
     peaks = peaks[i_rows, i_peaks]
 
@@ -717,6 +717,7 @@ class MFModel():
                       " is %d." %
                       (pk_sh[-1] - maxfasc * 3, maxfasc))
             # Internal peaks array has shape (np.sum(mask>0), 3*MAX_FASC)
+            # restricted to mask (or ROI) to save memory
             peaks_roi = peaks_roi[mask_arr > 0, :3*maxfasc]
             peaks_set = True
         elif colat_longit is not None:
@@ -798,6 +799,7 @@ class MFModel():
                     # mask_nnz has shape (n_roi, 1) to broadcast to (n_roi, 3)
                     peaks_roi[:, 3*i:3*i+3] = eigv[..., -1] * mask_nnz
 
+        # Check for missing peak directions
         for i in range(maxfasc):
             n = i + 1
             peak_L1norm = np.sum(
@@ -931,8 +933,8 @@ class MFModel():
                        ear_on * self.dic['num_ear'])
         D = np.zeros((num_seq, max_dicsize))
 
-        # Note: peaks, numpeaks, csf and ear are reduced to ROI shape
-        # (np.sum(mask>0),)
+        # Note: peaks, numpeaks, csf and ear are reduced to arrays with
+        # shape[0] equal to size of ROI np.sum(mask > 0) at this point
 
         # Parameter order:
         # initial magnetization M0,
@@ -977,7 +979,7 @@ class MFModel():
             # Parallel, multi-process execution
             n_cpu = int(mp.cpu_count()/1)
             # chunksize heuristics: number of physical CPUs usually half of
-            # value returned by cpu_count, hence the factor 2.
+            # value returned by cpu_count, hence the factor 2:
             chunksize = max(1, int(2*ROI_size/n_cpu))
             if VRB >= 2:
                 print("Starting estimation in %d voxel(s) in parallel"
@@ -1031,15 +1033,19 @@ class MFModel():
 
         # Return a Dipy-style "fit object" with the info to output model
         # parameters
+        # NOTE: it might be cleaner to include peak orientations in the
+        # params_in_mask array for better compatibility with DIPY
         fitinfo = {'maxfasc': maxfasc,
                    'csf_on': csf_on,
                    'ear_on': ear_on,
                    'affine': nii_affine,
                    'mask': mask_arr,
                    'fasc_propnames': [x.strip() for x in
-                                      self.dic['fasc_propnames']]}
+                                      self.dic['fasc_propnames']],
+                   'peaks_roi': peaks_roi}
+        # include properties of each dictionary fingerprint in "fit object"
         for n in fitinfo['fasc_propnames']:
-            fitinfo['_' + n] = self.dic[n]  # prepend _ for name collisions
+            fitinfo['_dict_' + n] = self.dic[n]  # prefix for name collisions
         if ear_on:
             fitinfo['DIFF_ear'] = self.dic['DIFF_ear']
         return MFModelFit(fitinfo, params_in_mask, verbose=VRB)
@@ -1055,15 +1061,18 @@ class MFModelFit():
         csf_on = fitinfo['csf_on']
         ear_on = fitinfo['ear_on']
         mask = fitinfo['mask']
+        ROI_size = model_params.shape[0]
+        assert ROI_size == np.sum(mask > 0), ('Inconsistent mask and model '
+                                              'parameter array')
 
         # M0
         self.M0 = np.zeros(mask.shape)
         self.M0[mask > 0] = model_params[:, 0]
         parlist = ['M0']
 
-        # Total fvf, fascicle-specific properties
-        fvf_in_mask = 0
+        # Create maps of fascicles' fractions nu and main orientations
         for k in range(numfasc):
+            # volume fraction map
             nu_k = model_params[:, k+1]
             prop_map = np.zeros(mask.shape)
             prop_map[mask > 0] = nu_k
@@ -1071,20 +1080,53 @@ class MFModelFit():
             setattr(self, par_name, prop_map)
             parlist.append(par_name)
 
-            ID_k = model_params[:, 1+numfasc+k].astype(int)
-            fvf_k = fitinfo['_fvf'][ID_k] * (nu_k > 0)
-            fvf_in_mask += nu_k * fvf_k
-            for n in fitinfo['fasc_propnames']:
+            # peak map
+            p_k = fitinfo['peaks_roi'][:, 3*k:3*(k+1)]  # (ROI_size, 3)
+            prop_map = np.zeros(mask.shape + (3,))
+            prop_map[mask > 0] = p_k
+            par_name = 'peak_f%d' % k
+            setattr(self, par_name, prop_map)
+            parlist.append(par_name)
+
+        # Fascicle-specific parameters and voxel-wise total parameters.
+        # The latter refers to parameters averaged over all fascicles of
+        # the voxel as
+        # M_{tot} = sum_{k=1}^K nu_k M_k,
+        # where K is the number of fascicles,
+        # nu_k is the physical fraction of the voxel occupied by fascicle k
+        # and M_k  is the microstructural property of fascicle k.
+        # Note that M_{tot} may not always make sense physically.
+        # For instance iff M is  the axon density then M_{tot} is the actual
+        # physical fraction of space located inside axons in the voxel.
+        # However if M represents the axonal radius then it
+        # is much less clear what M_{tot} represents. Note also that
+        # sum_{k=1}^K nu_k can be < 1 because of the presence of non-fascicle
+        # compartments such as cerebro-spinal fluid (CSF) or extraaxonal
+        # restricted (EAR).
+        for propname in fitinfo['fasc_propnames']:
+            prop_tot_in_mask = np.zeros(ROI_size)  # map of voxel average
+            for k in range(numfasc):
+                # Create map of fascicle-specific properties
+                # Get fraction of fascicle k
+                nu_k = model_params[:, k+1]
+                # get ID of fingerprint in subdictionary k
+                ID_k = model_params[:, 1+numfasc+k].astype(int)
                 # Leave property to zero if no weight assigned to fascicle!
-                prop_k_in_mask = fitinfo['_' + n][ID_k] * (nu_k > 0)
+                prop_k_in_mask = fitinfo['_dict_'+propname][ID_k] * (nu_k > 0)
+                # update average parameter
+                prop_tot_in_mask += nu_k * prop_k_in_mask
+                # Create map of fascicle-specific parameter and store it
                 prop_map = np.zeros(mask.shape)
                 prop_map[mask > 0] = prop_k_in_mask
-                par_name = n + '_f%d' % k  # start numbering at zero
+                par_name = propname + '_f%d' % k  # start numbering at zero
                 setattr(self, par_name, prop_map)
                 parlist.append(par_name)
-        self.fvf_tot = np.zeros(mask.shape)
-        self.fvf_tot[mask > 0] = fvf_in_mask
-        parlist.append('fvf_tot')
+            # Create map of voxel-wise average property and store it
+            prop_map = np.zeros(mask.shape)  # reuse prop_map to save memory
+            prop_map[mask > 0] = prop_tot_in_mask
+            par_tot_name = propname + '_tot'
+            setattr(self, par_tot_name, prop_map)
+            parlist.append(par_tot_name)
 
         if csf_on:
             self.frac_csf = np.zeros(mask.shape)
@@ -1109,7 +1151,7 @@ class MFModelFit():
         self.MSE[mask > 0] = model_params[:, -2]
         parlist.append('MSE')
 
-        # R squared (oefficient of determination)
+        # R squared (coefficient of determination, square of Pearson)
         self.R2 = np.zeros(mask.shape)
         self.R2[mask > 0] = model_params[:, -1]
         parlist.append('R2')
@@ -1121,9 +1163,12 @@ class MFModelFit():
         if verbose >= 2:
             print("Microstructure Fingerprinting fit object constructed.")
             print("Assuming the fit object was named \'MF_fit\', "
-                  "you can access property maps (NumPy arrays) "
+                  "\'MF_fit.param_names\' gives you a list of all "
+                  "the property maps as strings.\n"
+                  "You can access those maps (NumPy arrays) "
                   "via \'MF_fit.property_name\',"
-                  " where \'property_name\' can be any of the following:")
+                  " where \'property_name\' is any of those strings."
+                  "Here the list is the following:")
             for p in parlist:
                 print('\t%s' % (p,))
             print("You can call \'MF_fit.write_nifti\' to write the "
