@@ -1,6 +1,14 @@
 [![Actions status](https://github.com/rensonnetg/microstructure_fingerprinting/actions/workflows/python_package.yaml/badge.svg?branch=test/ci_cd)](https://github.com/rensonnetg/microstructure_fingerprinting/actions/workflows/python_package.yaml)
 # Microstructure fingerprinting
-Estimation of white matter microstructural properties from a dictionary of Monte Carlo diffusion MRI fingerprints in Python 3.
+Estimation of white matter microstructural properties (brain and spinal cord) from diffusion MRI data, using a dictionary of Monte Carlo diffusion MRI fingerprints in Python 3.
+
+## Features
+Support for
+- parallel processing
+- all platforms
+- fast execution using Numba
+- inputs as Nifti images or NumPy arrays
+- [DIPY](https://dipy.org/)-like interface
 
 ## Requirements
 This package requires the following packages (it is recommended to use pip or conda)
@@ -75,10 +83,10 @@ dictionary_file = 'mf_dictionary.mat'
 mf_model = mf.MFModel(dictionary_file)
 
 # Fit to data:
-MF_fit = mf_model.fit(DWIfile,  # help(mf_model.fit)
+MF_fit = mf_model.fit(DWIfile,  # type help(mf_model.fit) for all the details
                       maskfile,
                       numfasc,  # all arguments after this MUST be named: argname=argvalue
-                      peaks=peaks,
+                      peaks=peaks, 
                       bvals=bvalfile,
                       bvecs=bvecfile,
                       csf_mask=csf_mask,
@@ -91,7 +99,7 @@ MF_fit = mf_model.fit(DWIfile,  # help(mf_model.fit)
 outputbasename = 'MF_test'
 MF_fit.write_nifti(outputbasename)
 ```
-After initializing the model, in an interactive Python shell type ```help(mf_model.fit)``` for details on the arguments and options of the model fitting method.
+After initializing the model, in an interactive Python shell type ```help(mf_model.fit)``` for details on the arguments and options of the model fitting method. Various combinations of input arguments and input formats are accepted.
 
 ### Lower-level interface
 The main function of the toolbox is ```solve_exhaustive_posweights```, which you would call by doing ```mfu.solve_exhaustive_posweights(Dictionary, y, dicsizes)``` as per the importation guidelines provided above.
