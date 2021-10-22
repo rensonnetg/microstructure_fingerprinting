@@ -12,11 +12,11 @@ Support for
 
 ## Requirements
 This package requires the following packages (it is recommended to use pip or conda)
-- numpy\*
-- scipy\*
 - matplotlib\*
-- nibabel
-- numba
+- nibabel\*
+- numba\*
+- numpy
+- scipy
 
 \* some functionalities may actually be available without matplotlib and/or nibabel and/or numba. This package can be imported without them and will only raise an error if a routine requiring one of these dependencies is used. Note that Numba only works with Python 3.6 or higher.
 
